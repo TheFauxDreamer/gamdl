@@ -98,7 +98,6 @@ gamdl-web --host 0.0.0.0 --port 3000
 
 - Full documentation: [gamdl/web/README.md](gamdl/web/README.md)
 - CLI documentation: [README.md](README.md)
-- Issues: https://github.com/glomatico/gamdl/issues
 
 ---
 
