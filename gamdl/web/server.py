@@ -1,0 +1,622 @@
+"""Web UI server for gamdl using FastAPI."""
+
+import asyncio
+import json
+import logging
+import os
+import uuid
+from dataclasses import asdict
+from pathlib import Path
+from typing import Dict, Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from gamdl.api.apple_music_api import AppleMusicApi
+from gamdl.downloader.downloader import AppleMusicDownloader
+from gamdl.interface.interface import AppleMusicInterface
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="gamdl Web UI")
+
+# Store active download sessions
+active_sessions: Dict[str, dict] = {}
+
+
+class DownloadRequest(BaseModel):
+    urls: list[str]
+    cookies_path: Optional[str] = None
+    output_path: Optional[str] = None
+    temp_path: Optional[str] = None
+
+    # Common options
+    final_path_template: Optional[str] = None
+    cover_format: Optional[str] = None
+    cover_size: Optional[int] = None
+    song_codec: Optional[str] = None
+    music_video_codec: Optional[str] = None
+    music_video_resolution: Optional[str] = None
+
+    # Metadata options
+    no_cover: bool = False
+    no_lyrics: bool = False
+    extra_tags: bool = False
+
+
+class SessionResponse(BaseModel):
+    session_id: str
+    status: str
+    message: str
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the main HTML page."""
+    html_path = Path(__file__).parent / "static" / "index.html"
+    if html_path.exists():
+        return FileResponse(html_path)
+
+    # Fallback inline HTML if static file doesn't exist
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>gamdl Web UI</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #333;
+                margin-bottom: 10px;
+            }
+            .subtitle {
+                color: #666;
+                margin-bottom: 30px;
+            }
+            .form-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                margin-bottom: 5px;
+                font-weight: 500;
+                color: #333;
+            }
+            input, textarea, select {
+                width: 100%;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 14px;
+                box-sizing: border-box;
+            }
+            textarea {
+                min-height: 100px;
+                font-family: monospace;
+            }
+            button {
+                background: #007aff;
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 4px;
+                font-size: 16px;
+                cursor: pointer;
+                font-weight: 500;
+            }
+            button:hover {
+                background: #0051d5;
+            }
+            button:disabled {
+                background: #ccc;
+                cursor: not-allowed;
+            }
+            .progress-container {
+                display: none;
+                margin-top: 30px;
+                padding: 20px;
+                background: #f9f9f9;
+                border-radius: 4px;
+            }
+            .progress-container.active {
+                display: block;
+            }
+            .progress-log {
+                background: #1e1e1e;
+                color: #d4d4d4;
+                padding: 15px;
+                border-radius: 4px;
+                max-height: 400px;
+                overflow-y: auto;
+                font-family: 'Courier New', monospace;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .progress-log .info {
+                color: #4ec9b0;
+            }
+            .progress-log .warning {
+                color: #dcdcaa;
+            }
+            .progress-log .error {
+                color: #f48771;
+            }
+            .progress-log .success {
+                color: #b5cea8;
+            }
+            .status-bar {
+                display: flex;
+                align-items: center;
+                margin-bottom: 15px;
+                padding: 10px;
+                background: white;
+                border-radius: 4px;
+            }
+            .status-indicator {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                margin-right: 10px;
+                background: #ccc;
+            }
+            .status-indicator.active {
+                background: #34c759;
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
+            }
+            .collapsible {
+                margin-top: 20px;
+            }
+            .collapsible-header {
+                background: #f0f0f0;
+                padding: 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                user-select: none;
+            }
+            .collapsible-header:hover {
+                background: #e8e8e8;
+            }
+            .collapsible-content {
+                display: none;
+                padding: 15px 0;
+            }
+            .collapsible-content.active {
+                display: block;
+            }
+            .row {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 15px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>gamdl Web UI</h1>
+            <p class="subtitle">Download Apple Music songs, albums, and playlists</p>
+
+            <form id="downloadForm">
+                <div class="form-group">
+                    <label for="urls">Apple Music URLs (one per line)</label>
+                    <textarea id="urls" name="urls" placeholder="https://music.apple.com/us/album/...&#10;https://music.apple.com/us/playlist/..." required></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="cookiesPath">Cookies Path (Netscape format)</label>
+                    <input type="text" id="cookiesPath" name="cookiesPath" placeholder="/path/to/cookies.txt">
+                </div>
+
+                <div class="form-group">
+                    <label for="outputPath">Output Path</label>
+                    <input type="text" id="outputPath" name="outputPath" placeholder="./downloads">
+                </div>
+
+                <div class="collapsible">
+                    <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                        <strong>⚙️ Advanced Options (click to expand)</strong>
+                    </div>
+                    <div class="collapsible-content">
+                        <div class="row">
+                            <div class="form-group">
+                                <label for="songCodec">Song Codec</label>
+                                <select id="songCodec" name="songCodec">
+                                    <option value="">Default (AAC)</option>
+                                    <option value="aac-legacy">AAC Legacy</option>
+                                    <option value="aac-he-legacy">AAC HE Legacy</option>
+                                    <option value="aac">AAC</option>
+                                    <option value="aac-he">AAC HE</option>
+                                    <option value="aac-binaural">AAC Binaural</option>
+                                    <option value="aac-downmix">AAC Downmix</option>
+                                    <option value="alac">ALAC</option>
+                                    <option value="atmos">Atmos</option>
+                                    <option value="ac3">AC3</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="coverSize">Cover Size (px)</label>
+                                <input type="number" id="coverSize" name="coverSize" placeholder="1200">
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="form-group">
+                                <label for="musicVideoResolution">Music Video Resolution</label>
+                                <select id="musicVideoResolution" name="musicVideoResolution">
+                                    <option value="">Best Available</option>
+                                    <option value="2160p">2160p (4K)</option>
+                                    <option value="1080p">1080p</option>
+                                    <option value="720p">720p</option>
+                                    <option value="480p">480p</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="coverFormat">Cover Format</label>
+                                <select id="coverFormat" name="coverFormat">
+                                    <option value="">Default (JPG)</option>
+                                    <option value="jpg">JPG</option>
+                                    <option value="png">PNG</option>
+                                    <option value="raw">Raw</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="noCover" name="noCover">
+                                Skip cover art download
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="noLyrics" name="noLyrics">
+                                Skip lyrics download
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="extraTags" name="extraTags">
+                                Fetch extra tags from Apple Music preview
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" id="downloadBtn">Start Download</button>
+            </form>
+
+            <div id="progressContainer" class="progress-container">
+                <div class="status-bar">
+                    <div id="statusIndicator" class="status-indicator"></div>
+                    <div id="statusText">Idle</div>
+                </div>
+                <div id="progressLog" class="progress-log"></div>
+            </div>
+        </div>
+
+        <script>
+            let ws = null;
+            let sessionId = null;
+
+            function toggleCollapsible(header) {
+                const content = header.nextElementSibling;
+                content.classList.toggle('active');
+            }
+
+            function addLog(message, level = 'info') {
+                const log = document.getElementById('progressLog');
+                const line = document.createElement('div');
+                line.className = level;
+                line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                log.appendChild(line);
+                log.scrollTop = log.scrollHeight;
+            }
+
+            function updateStatus(text, active = false) {
+                document.getElementById('statusText').textContent = text;
+                const indicator = document.getElementById('statusIndicator');
+                if (active) {
+                    indicator.classList.add('active');
+                } else {
+                    indicator.classList.remove('active');
+                }
+            }
+
+            function connectWebSocket(sessionId) {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                ws = new WebSocket(`${protocol}//${window.location.host}/ws/${sessionId}`);
+
+                ws.onopen = () => {
+                    addLog('Connected to server', 'success');
+                    updateStatus('Connected - Processing...', true);
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'log') {
+                        addLog(data.message, data.level || 'info');
+                    } else if (data.type === 'progress') {
+                        addLog(data.message, 'info');
+                    } else if (data.type === 'error') {
+                        addLog(`ERROR: ${data.message}`, 'error');
+                        updateStatus('Error occurred', false);
+                    } else if (data.type === 'complete') {
+                        addLog('Download completed!', 'success');
+                        updateStatus('Completed', false);
+                        document.getElementById('downloadBtn').disabled = false;
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    addLog('WebSocket error occurred', 'error');
+                    updateStatus('Connection error', false);
+                    document.getElementById('downloadBtn').disabled = false;
+                };
+
+                ws.onclose = () => {
+                    addLog('Connection closed', 'warning');
+                    if (document.getElementById('statusIndicator').classList.contains('active')) {
+                        updateStatus('Disconnected', false);
+                    }
+                };
+            }
+
+            document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                const formData = new FormData(e.target);
+                const urls = formData.get('urls').split('\\n').filter(u => u.trim());
+
+                const payload = {
+                    urls: urls,
+                    cookies_path: formData.get('cookiesPath') || null,
+                    output_path: formData.get('outputPath') || null,
+                    song_codec: formData.get('songCodec') || null,
+                    cover_size: formData.get('coverSize') ? parseInt(formData.get('coverSize')) : null,
+                    music_video_resolution: formData.get('musicVideoResolution') || null,
+                    cover_format: formData.get('coverFormat') || null,
+                    no_cover: document.getElementById('noCover').checked,
+                    no_lyrics: document.getElementById('noLyrics').checked,
+                    extra_tags: document.getElementById('extraTags').checked,
+                };
+
+                document.getElementById('downloadBtn').disabled = true;
+                document.getElementById('progressContainer').classList.add('active');
+                document.getElementById('progressLog').innerHTML = '';
+
+                addLog('Starting download session...', 'info');
+                updateStatus('Initializing...', true);
+
+                try {
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(payload),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    sessionId = data.session_id;
+                    addLog(`Session created: ${sessionId}`, 'success');
+
+                    connectWebSocket(sessionId);
+                } catch (error) {
+                    addLog(`Failed to start download: ${error.message}`, 'error');
+                    updateStatus('Failed to start', false);
+                    document.getElementById('downloadBtn').disabled = false;
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+
+
+@app.post("/api/download", response_model=SessionResponse)
+async def start_download(request: DownloadRequest):
+    """Start a new download session."""
+    session_id = str(uuid.uuid4())
+
+    active_sessions[session_id] = {
+        "status": "initializing",
+        "request": request,
+        "logs": [],
+        "websocket": None,
+    }
+
+    logger.info(f"Created download session {session_id}")
+
+    return SessionResponse(
+        session_id=session_id,
+        status="created",
+        message="Download session created. Connect to WebSocket for progress.",
+    )
+
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for real-time progress updates."""
+    await websocket.accept()
+
+    if session_id not in active_sessions:
+        await websocket.send_json({
+            "type": "error",
+            "message": "Invalid session ID",
+        })
+        await websocket.close()
+        return
+
+    session = active_sessions[session_id]
+    session["websocket"] = websocket
+    session["status"] = "running"
+
+    try:
+        # Send initial connection message
+        await websocket.send_json({
+            "type": "log",
+            "message": "Session started",
+            "level": "info",
+        })
+
+        # Run the download process
+        await run_download_session(session_id, session, websocket)
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for session {session_id}")
+    except Exception as e:
+        logger.error(f"Error in WebSocket for session {session_id}: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e),
+            })
+        except:
+            pass
+    finally:
+        session["status"] = "completed"
+        if session_id in active_sessions:
+            del active_sessions[session_id]
+
+
+async def run_download_session(session_id: str, session: dict, websocket: WebSocket):
+    """Run the actual download process with progress updates."""
+    request: DownloadRequest = session["request"]
+
+    async def send_log(message: str, level: str = "info"):
+        """Send a log message via WebSocket."""
+        try:
+            await websocket.send_json({
+                "type": "log",
+                "message": message,
+                "level": level,
+            })
+        except:
+            pass
+
+    try:
+        await send_log("Initializing Apple Music API...")
+
+        # Initialize API
+        cookies_path = request.cookies_path or os.path.expanduser("~/.gamdl/cookies.txt")
+        if not Path(cookies_path).exists():
+            await send_log(f"Cookies file not found at {cookies_path}", "error")
+            await send_log("Please provide a valid cookies.txt file", "error")
+            await websocket.send_json({"type": "complete"})
+            return
+
+        api = await AppleMusicApi.create_from_netscape_cookies(
+            cookies_path=cookies_path,
+        )
+        await send_log("API initialized successfully", "success")
+
+        # Initialize interface
+        interface = AppleMusicInterface(api)
+
+        # Initialize downloader
+        output_path = request.output_path or "./downloads"
+        temp_path = request.temp_path or "./temp"
+
+        downloader = AppleMusicDownloader(
+            interface=interface,
+            output_path=output_path,
+            temp_path=temp_path,
+            no_cover=request.no_cover,
+            extra_tags=request.extra_tags,
+        )
+
+        await send_log(f"Processing {len(request.urls)} URL(s)...")
+
+        # Process each URL
+        for url_index, url in enumerate(request.urls, 1):
+            await send_log(f"[URL {url_index}/{len(request.urls)}] Processing: {url}")
+
+            try:
+                # Get URL info
+                url_info = downloader.get_url_info(url)
+                if not url_info:
+                    await send_log(f"Could not parse URL: {url}", "warning")
+                    continue
+
+                # Get download queue
+                await send_log(f"Fetching metadata for {url}...")
+                download_queue = await downloader.get_download_queue(url_info)
+
+                if not download_queue:
+                    await send_log("No downloadable media found", "warning")
+                    continue
+
+                await send_log(f"Found {len(download_queue)} track(s) to download", "success")
+
+                # Download each item
+                for download_index, download_item in enumerate(download_queue, 1):
+                    media_title = download_item.media_metadata.get("attributes", {}).get("name", "Unknown")
+                    await send_log(f"[Track {download_index}/{len(download_queue)}] Downloading: {media_title}")
+
+                    try:
+                        await downloader.download(download_item)
+                        await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
+                    except Exception as e:
+                        await send_log(f"[Track {download_index}/{len(download_queue)}] Error: {str(e)}", "error")
+                        continue
+
+            except Exception as e:
+                await send_log(f"Error processing URL: {str(e)}", "error")
+                continue
+
+        await send_log("All downloads completed!", "success")
+        await websocket.send_json({"type": "complete"})
+
+    except Exception as e:
+        logger.error(f"Download session error: {e}", exc_info=True)
+        await send_log(f"Fatal error: {str(e)}", "error")
+        await websocket.send_json({"type": "complete"})
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
+def main(host: str = "127.0.0.1", port: int = 8080):
+    """Start the web server."""
+    import uvicorn
+
+    print(f"\n🎵 gamdl Web UI starting...")
+    print(f"📡 Server: http://{host}:{port}")
+    print(f"⚡ Press Ctrl+C to stop\n")
+
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

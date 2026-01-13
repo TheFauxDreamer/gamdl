@@ -48,12 +48,41 @@ Add these tools to your system PATH for additional features:
 
 ```bash
 pipx install gamdl
+
+# Optional: Install with Web UI support
+pipx install "gamdl[web]"
 ```
 
 **Setup cookies:**
 
 1. Place your cookies file in the working directory as `cookies.txt`, or
 2. Specify the path using `--cookies-path` or in the config file
+
+## 🌐 Web UI
+
+Gamdl now includes a modern web interface with real-time progress tracking!
+
+**Quick Start:**
+
+```bash
+# Install with web support
+pipx install "gamdl[web]"
+
+# Start the web server
+gamdl-web
+
+# Open browser to http://127.0.0.1:8080
+```
+
+**Features:**
+- 📊 **Real-time Progress** - See live updates for pagination, metadata processing, and downloads
+- 🎨 **Modern Interface** - Clean, responsive design that works in any browser
+- 📈 **Large Playlist Support** - Progress tracking for playlists with thousands of songs
+- ⚙️ **Full Configuration** - Access to all major gamdl features
+
+Perfect for visualizing progress on large playlists (13,000+ songs) where you need to know it's still working!
+
+See [WEB_UI_QUICKSTART.md](WEB_UI_QUICKSTART.md) for detailed instructions.
 
 ## 🚀 Usage
 

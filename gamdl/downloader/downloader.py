@@ -125,10 +125,16 @@ class AppleMusicDownloader:
         collection_metadata: dict,
     ) -> list[DownloadItem]:
         tracks_metadata = collection_metadata["relationships"]["tracks"]["data"]
+        page_count = 1
+        logger.info(f"Fetching playlist tracks (page {page_count}, {len(tracks_metadata)} tracks so far)...")
         async for extended_data in self.interface.apple_music_api.extend_api_data(
             collection_metadata["relationships"]["tracks"],
         ):
             tracks_metadata.extend(extended_data["data"])
+            page_count += 1
+            logger.info(f"Fetching playlist tracks (page {page_count}, {len(tracks_metadata)} tracks so far)...")
+
+        logger.info(f"Fetched {len(tracks_metadata)} tracks total. Processing metadata...")
 
         tasks = [
             self.get_single_download_item(
@@ -142,7 +148,15 @@ class AppleMusicDownloader:
             for media_metadata in tracks_metadata
         ]
 
-        download_items = await safe_gather(*tasks)
+        def progress_callback(completed: int, total: int):
+            # Show progress every 10 tracks or at 10% intervals, whichever is more frequent
+            interval = max(10, total // 10)
+            if completed % interval == 0 or completed == total:
+                percentage = (completed / total) * 100
+                logger.info(f"Processing metadata: {completed}/{total} tracks ({percentage:.1f}%)")
+
+        download_items = await safe_gather(*tasks, progress_callback=progress_callback)
+        logger.info(f"Finished processing metadata for {len(download_items)} tracks.")
         return download_items
 
     async def get_artist_download_items(

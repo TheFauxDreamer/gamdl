@@ -52,12 +52,20 @@ async def async_subprocess(*args: str, silent: bool = False) -> None:
 async def safe_gather(
     *tasks: typing.Awaitable[typing.Any],
     limit: int = 10,
+    progress_callback: typing.Optional[typing.Callable[[int, int], None]] = None,
 ) -> list[typing.Any]:
     semaphore = asyncio.Semaphore(limit)
+    completed_count = 0
+    total_count = len(tasks)
 
     async def bounded_task(task: typing.Awaitable[typing.Any]) -> typing.Any:
+        nonlocal completed_count
         async with semaphore:
-            return await task
+            result = await task
+            if progress_callback:
+                completed_count += 1
+                progress_callback(completed_count, total_count)
+            return result
 
     return await asyncio.gather(
         *(bounded_task(task) for task in tasks),
