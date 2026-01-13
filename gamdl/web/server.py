@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from gamdl.api.apple_music_api import AppleMusicApi
+from gamdl.api.itunes_api import ItunesApi
 from gamdl.downloader.downloader import AppleMusicDownloader
 from gamdl.interface.interface import AppleMusicInterface
 
@@ -536,10 +537,17 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         api = await AppleMusicApi.create_from_netscape_cookies(
             cookies_path=cookies_path,
         )
-        await send_log("API initialized successfully", "success")
+        await send_log("Apple Music API initialized successfully", "success")
+
+        # Initialize iTunes API
+        itunes_api = ItunesApi(
+            api.storefront,
+            api.language,
+        )
+        await send_log("iTunes API initialized successfully", "success")
 
         # Initialize interface
-        interface = AppleMusicInterface(api)
+        interface = AppleMusicInterface(api, itunes_api)
 
         # Initialize downloader
         output_path = request.output_path or "./downloads"
