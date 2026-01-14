@@ -2017,28 +2017,86 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time progress updates."""
     await websocket.accept()
 
-    if session_id not in active_sessions:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Invalid session ID",
-        })
-        await websocket.close()
-        return
-
-    session = active_sessions[session_id]
-    session["websocket"] = websocket
-    session["status"] = "running"
+    # Add to broadcast list for queue updates
+    websocket_clients.append(websocket)
 
     try:
-        # Send initial connection message
-        await websocket.send_json({
-            "type": "log",
-            "message": "Session started",
-            "level": "info",
-        })
+        # Check if this is a queue item ID
+        queue_item = None
+        with queue_lock:
+            for item in download_queue:
+                if item.id == session_id:
+                    queue_item = item
+                    break
 
-        # Run the download process
-        await run_download_session(session_id, session, websocket)
+        if queue_item:
+            # This is a queue item - wait for it to start downloading
+            await websocket.send_json({
+                "type": "log",
+                "message": f"Item added to queue. Position: {[i.id for i in download_queue if i.status == QueueItemStatus.QUEUED].index(session_id) + 1 if session_id in [i.id for i in download_queue if i.status == QueueItemStatus.QUEUED] else 'Processing'}",
+                "level": "info",
+            })
+
+            # Wait for the item to start downloading
+            while queue_item.status == QueueItemStatus.QUEUED:
+                await asyncio.sleep(0.5)
+
+            # Check if item was cancelled
+            if queue_item.status == QueueItemStatus.CANCELLED:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Download was cancelled",
+                })
+                return
+
+            # Item is now downloading - get the actual session
+            if queue_item.session_id and queue_item.session_id in active_sessions:
+                session = active_sessions[queue_item.session_id]
+                session["websocket"] = websocket
+
+                await websocket.send_json({
+                    "type": "log",
+                    "message": "Download starting...",
+                    "level": "info",
+                })
+
+                # Keep connection alive until download completes
+                while session.get("status") == "running":
+                    await asyncio.sleep(1)
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Session not found",
+                })
+                return
+
+        elif session_id in active_sessions:
+            # This is a direct session ID (old behavior)
+            session = active_sessions[session_id]
+            session["websocket"] = websocket
+            session["status"] = "running"
+
+            # Send initial connection message
+            await websocket.send_json({
+                "type": "log",
+                "message": "Session started",
+                "level": "info",
+            })
+
+            # Run the download process
+            await run_download_session(session_id, session, websocket)
+
+            session["status"] = "completed"
+            if session_id in active_sessions:
+                del active_sessions[session_id]
+            if session_id in cancellation_flags:
+                del cancellation_flags[session_id]
+
+        else:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Invalid session ID or queue item ID",
+            })
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")
@@ -2052,11 +2110,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         except:
             pass
     finally:
-        session["status"] = "completed"
-        if session_id in active_sessions:
-            del active_sessions[session_id]
-        if session_id in cancellation_flags:
-            del cancellation_flags[session_id]
+        # Remove from broadcast list
+        if websocket in websocket_clients:
+            websocket_clients.remove(websocket)
 
 
 async def run_download_session(session_id: str, session: dict, websocket: WebSocket):
