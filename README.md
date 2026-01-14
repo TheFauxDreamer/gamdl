@@ -6,7 +6,7 @@ A CLI & Web-based GUI app for downloading Apple Music songs, & music videos.
 **Disclaimer:** I know very little about Python, this is all thanks to Claude.
 
 
-# Unique Features in my Fork
+# ✅ Unique Features in my Fork
 
 ## Current Features
 These work to a degree I haven't encountered major issues or bugs that break the experience.
@@ -19,14 +19,14 @@ These work to a degree I haven't encountered major issues or bugs that break the
 - Delay between downloads
 
 
-## WIP Features
+## ⚠️ WIP Features
 These are in "active" development and in varying states of useability.
 
 - Search feature (no need to open a seperate apple music tab)
 - One-click, download entire artist discography (albums, songs, EPs)
 
 
-## Future Features
+## 🗓️ Future Features
 These will come in time, I don't have a timeline tho.
 
 - Set a monitored playlist and download new additions automatically
