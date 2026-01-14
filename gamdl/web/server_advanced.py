@@ -105,6 +105,56 @@ class SessionResponse(BaseModel):
 
 # Queue Management Functions
 
+def extract_display_info_from_url(url: str) -> dict:
+    """Extract display information from an Apple Music URL."""
+    # Parse the URL to extract type and ID
+    # Example URLs:
+    # https://music.apple.com/us/album/album-name/123456
+    # https://music.apple.com/us/playlist/playlist-name/pl.u-123456
+    # https://music.apple.com/us/song/song-name/123456
+
+    import re
+
+    # Default values
+    display_type = "URL"
+    display_title = url
+
+    # Try to extract type from URL
+    if '/album/' in url:
+        display_type = "Album"
+        # Try to extract album name from URL
+        match = re.search(r'/album/([^/]+)/', url)
+        if match:
+            # Decode URL encoding and replace hyphens with spaces
+            name = match.group(1).replace('-', ' ')
+            # Decode URL encoding
+            from urllib.parse import unquote
+            display_title = unquote(name).title()
+    elif '/playlist/' in url:
+        display_type = "Playlist"
+        match = re.search(r'/playlist/([^/]+)/', url)
+        if match:
+            name = match.group(1).replace('-', ' ')
+            from urllib.parse import unquote
+            display_title = unquote(name).title()
+    elif '/song/' in url:
+        display_type = "Song"
+        match = re.search(r'/song/([^/]+)/', url)
+        if match:
+            name = match.group(1).replace('-', ' ')
+            from urllib.parse import unquote
+            display_title = unquote(name).title()
+    elif '/music-video/' in url:
+        display_type = "Music Video"
+        match = re.search(r'/music-video/([^/]+)/', url)
+        if match:
+            name = match.group(1).replace('-', ' ')
+            from urllib.parse import unquote
+            display_title = unquote(name).title()
+
+    return {"title": display_title, "type": display_type}
+
+
 def add_to_queue(download_request: DownloadRequest, display_info: Optional[dict] = None) -> str:
     """Add a download request to the queue. Returns queue item ID."""
     global queue_processor_running
@@ -897,6 +947,57 @@ async def root():
                 font-size: 48px;
                 margin-bottom: 10px;
             }
+            .queue-item-icon {
+                font-size: 16px;
+                margin-right: 8px;
+            }
+            .queue-item-meta {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+                font-size: 12px;
+            }
+            .queue-item-info {
+                font-size: 11px;
+                color: #007aff;
+                margin-bottom: 8px;
+            }
+            .queue-item-error {
+                font-size: 11px;
+                color: #ff3b30;
+                background: #fff5f5;
+                padding: 6px 8px;
+                border-radius: 4px;
+                margin-bottom: 8px;
+                word-break: break-word;
+            }
+            .queue-item-remove,
+            .queue-item-view {
+                padding: 4px 12px;
+                font-size: 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: white;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+            .queue-item-remove {
+                color: #ff3b30;
+                border-color: #ff3b30;
+            }
+            .queue-item-remove:hover {
+                background: #ff3b30;
+                color: white;
+            }
+            .queue-item-view {
+                color: #007aff;
+                border-color: #007aff;
+            }
+            .queue-item-view:hover {
+                background: #007aff;
+                color: white;
+            }
         </style>
     </head>
     <body>
@@ -1288,14 +1389,15 @@ async def root():
                 const formData = new FormData(e.target);
                 const urls = formData.get('urls').split('\\n').filter(u => u.trim());
 
+                // Read settings from Settings tab (not from form)
                 const payload = {
                     urls: urls,
-                    cookies_path: formData.get('cookiesPath') || null,
-                    output_path: formData.get('outputPath') || null,
-                    song_codec: formData.get('songCodec') || null,
-                    cover_size: formData.get('coverSize') ? parseInt(formData.get('coverSize')) : null,
-                    music_video_resolution: formData.get('musicVideoResolution') || null,
-                    cover_format: formData.get('coverFormat') || null,
+                    cookies_path: document.getElementById('cookiesPath').value || null,
+                    output_path: document.getElementById('outputPath').value || null,
+                    song_codec: document.getElementById('songCodec').value || null,
+                    cover_size: document.getElementById('coverSize').value ? parseInt(document.getElementById('coverSize').value) : null,
+                    music_video_resolution: document.getElementById('musicVideoResolution').value || null,
+                    cover_format: document.getElementById('coverFormat').value || null,
                     no_cover: document.getElementById('noCover').checked,
                     no_lyrics: document.getElementById('noLyrics').checked,
                     extra_tags: document.getElementById('extraTags').checked,
@@ -1560,7 +1662,7 @@ async def root():
 
                 const btn = document.createElement('button');
                 btn.textContent = 'Download';
-                btn.onclick = () => downloadLibraryItem(item.id, type);
+                btn.onclick = () => downloadLibraryItem(item.id, type, item.name, item.artist);
 
                 div.appendChild(img);
                 div.appendChild(title);
@@ -1570,14 +1672,21 @@ async def root():
                 return div;
             }
 
-            async function downloadLibraryItem(libraryId, mediaType) {
+            async function downloadLibraryItem(libraryId, mediaType, itemName, itemArtist) {
                 try {
+                    // Format display title
+                    let displayTitle = itemName;
+                    if (itemArtist && mediaType !== 'playlist') {
+                        displayTitle = `${itemName} - ${itemArtist}`;
+                    }
+
                     const response = await fetch('/api/library/download', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             library_id: libraryId,
                             media_type: mediaType,
+                            display_title: displayTitle,
                             cookies_path: document.getElementById('cookiesPath').value,
                             output_path: document.getElementById('outputPath').value,
                         })
@@ -1589,15 +1698,12 @@ async def root():
                     }
 
                     const data = await response.json();
-                    sessionId = data.session_id;
 
-                    // Switch to downloads view
-                    const downloadsTab = document.querySelectorAll('.nav-tabs > .nav-tab')[1];
-                    switchView('downloads', downloadsTab);
+                    // Item added to queue - show brief notification
+                    alert(`Added to queue: ${displayTitle}`);
 
-                    // Connect WebSocket
-                    connectWebSocket(sessionId);
-                    updateStatus('Connected - Processing...', true);
+                    // Refresh queue to show the new item
+                    await refreshQueueStatus();
                 } catch (error) {
                     alert(`Failed to start download: ${error.message}`);
                 }
@@ -1681,6 +1787,219 @@ async def root():
                 alert('Settings saved successfully!');
             }
 
+            // ========================================
+            // Queue Management Functions
+            // ========================================
+
+            let queuePanelCollapsed = false;
+            let queueUpdateInterval = null;
+
+            function toggleQueuePanel() {
+                const panel = document.getElementById('queuePanel');
+                const toggleIcon = document.getElementById('queueToggleIcon');
+                queuePanelCollapsed = !queuePanelCollapsed;
+
+                if (queuePanelCollapsed) {
+                    panel.classList.add('collapsed');
+                    document.body.classList.add('queue-collapsed');
+                    toggleIcon.textContent = '▶';
+                } else {
+                    panel.classList.remove('collapsed');
+                    document.body.classList.remove('queue-collapsed');
+                    toggleIcon.textContent = '◀';
+                }
+            }
+
+            async function pauseQueue() {
+                const btn = document.getElementById('pauseQueueBtn');
+                const isPaused = btn.textContent.includes('Resume');
+
+                try {
+                    const endpoint = isPaused ? '/api/queue/resume' : '/api/queue/pause';
+                    const response = await fetch(endpoint, { method: 'POST' });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to toggle queue pause state');
+                    }
+
+                    const data = await response.json();
+                    btn.textContent = isPaused ? '⏸ Pause' : '▶ Resume';
+                    btn.style.background = isPaused ? '#007aff' : '#34c759';
+
+                    // Immediately refresh queue status
+                    await refreshQueueStatus();
+                } catch (error) {
+                    console.error('Error toggling queue pause:', error);
+                    alert('Failed to toggle queue pause state');
+                }
+            }
+
+            async function clearCompleted() {
+                try {
+                    const response = await fetch('/api/queue/clear', { method: 'POST' });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to clear completed items');
+                    }
+
+                    await refreshQueueStatus();
+                } catch (error) {
+                    console.error('Error clearing completed items:', error);
+                    alert('Failed to clear completed items');
+                }
+            }
+
+            async function removeQueueItem(itemId) {
+                if (!confirm('Are you sure you want to remove this item from the queue?')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/queue/remove/${itemId}`, { method: 'DELETE' });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to remove item from queue');
+                    }
+
+                    await refreshQueueStatus();
+                } catch (error) {
+                    console.error('Error removing queue item:', error);
+                    alert('Failed to remove item from queue');
+                }
+            }
+
+            async function refreshQueueStatus() {
+                try {
+                    const response = await fetch('/api/queue/status');
+
+                    if (!response.ok) {
+                        throw new Error('Failed to fetch queue status');
+                    }
+
+                    const data = await response.json();
+                    updateQueueUI(data);
+                } catch (error) {
+                    console.error('Error fetching queue status:', error);
+                }
+            }
+
+            function updateQueueUI(queueData) {
+                // Update counts
+                const queued = queueData.items.filter(item => item.status === 'queued').length;
+                const downloading = queueData.items.filter(item => item.status === 'downloading').length;
+                const completed = queueData.items.filter(item => item.status === 'completed').length;
+
+                document.getElementById('queuedCount').textContent = queued;
+                document.getElementById('downloadingCount').textContent = downloading;
+                document.getElementById('completedCount').textContent = completed;
+
+                // Update pause button state
+                const pauseBtn = document.getElementById('pauseQueueBtn');
+                if (queueData.paused) {
+                    pauseBtn.textContent = '▶ Resume';
+                    pauseBtn.style.background = '#34c759';
+                } else {
+                    pauseBtn.textContent = '⏸ Pause';
+                    pauseBtn.style.background = '#007aff';
+                }
+
+                // Render queue list
+                renderQueueList(queueData.items);
+            }
+
+            function renderQueueList(items) {
+                const queueList = document.getElementById('queueList');
+
+                if (items.length === 0) {
+                    queueList.innerHTML = '<div class="queue-empty">No items in queue</div>';
+                    return;
+                }
+
+                queueList.innerHTML = items.map(item => {
+                    const statusClass = item.status.toLowerCase();
+                    const statusIcon = {
+                        'queued': '⏳',
+                        'downloading': '⬇️',
+                        'completed': '✅',
+                        'failed': '❌',
+                        'cancelled': '⛔'
+                    }[item.status] || '•';
+
+                    const statusText = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+
+                    let actionButton = '';
+                    if (item.status === 'queued') {
+                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')">Remove</button>`;
+                    } else if (item.status === 'downloading') {
+                        actionButton = `<button class="queue-item-view" onclick="viewDownloadProgress('${item.id}')">View Progress</button>`;
+                    } else if (item.status === 'failed') {
+                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')">Remove</button>`;
+                    }
+
+                    const errorMessage = item.error_message ?
+                        `<div class="queue-item-error">Error: ${escapeHtml(item.error_message)}</div>` : '';
+
+                    const urlInfo = item.url_count > 1 ?
+                        `<div class="queue-item-info">${item.url_count} URLs</div>` : '';
+
+                    return `
+                        <div class="queue-item ${statusClass}">
+                            <div class="queue-item-header">
+                                <span class="queue-item-icon">${statusIcon}</span>
+                                <span class="queue-item-title">${escapeHtml(item.display_title)}</span>
+                            </div>
+                            <div class="queue-item-meta">
+                                <span class="queue-item-type">${escapeHtml(item.display_type)}</span>
+                                <span class="queue-item-status">${statusText}</span>
+                            </div>
+                            ${urlInfo}
+                            ${errorMessage}
+                            <div class="queue-item-actions">
+                                ${actionButton}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            function viewDownloadProgress(itemId) {
+                // Switch to Downloads view
+                switchView('downloads', document.querySelector('[onclick*="downloads"]'));
+
+                // The WebSocket should already be connected for this item
+                // If not, we can reconnect using the item ID
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    sessionId = itemId;
+                    connectWebSocket();
+                }
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // Start periodic queue status refresh
+            function startQueueRefresh() {
+                if (queueUpdateInterval) {
+                    clearInterval(queueUpdateInterval);
+                }
+
+                // Refresh every 3 seconds
+                queueUpdateInterval = setInterval(refreshQueueStatus, 3000);
+
+                // Initial refresh
+                refreshQueueStatus();
+            }
+
+            function stopQueueRefresh() {
+                if (queueUpdateInterval) {
+                    clearInterval(queueUpdateInterval);
+                    queueUpdateInterval = null;
+                }
+            }
+
             // Add event listeners to save preferences when fields change
             document.getElementById('cookiesPath').addEventListener('change', savePreferences);
             document.getElementById('outputPath').addEventListener('change', savePreferences);
@@ -1696,6 +2015,7 @@ async def root():
             document.addEventListener('DOMContentLoaded', () => {
                 loadPreferences();
                 loadLibraryAlbums();
+                startQueueRefresh();
             });
         </script>
     </body>
@@ -1754,7 +2074,19 @@ async def clear_queue_endpoint():
 @app.post("/api/download", response_model=SessionResponse)
 async def start_download(request: DownloadRequest):
     """Add download to queue instead of starting immediately."""
-    item_id = add_to_queue(request)
+    # Extract display info from URLs
+    display_info = None
+    if request.urls:
+        first_url = request.urls[0]
+        url_info = extract_display_info_from_url(first_url)
+
+        # If multiple URLs, update the title to indicate count
+        if len(request.urls) > 1:
+            url_info["title"] = f"{url_info['title']} (+{len(request.urls) - 1} more)"
+
+        display_info = url_info
+
+    item_id = add_to_queue(request, display_info)
 
     return SessionResponse(
         session_id=item_id,  # Return item_id as session_id for compatibility
@@ -2135,13 +2467,18 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
 
         # Initialize API - handle empty strings and expand ~ paths
         cookies_path = request.cookies_path
+        logger.info(f"Received cookies_path: {repr(cookies_path)}")
+
         if not cookies_path or cookies_path.strip() == "":
             cookies_path = os.path.expanduser("~/.gamdl/cookies.txt")
+            logger.info(f"Using default cookies path: {cookies_path}")
         else:
             cookies_path = cookies_path.strip()
+            logger.info(f"Using provided cookies path (before expansion): {cookies_path}")
             # Expand ~ in user-provided paths
             if cookies_path.startswith("~"):
                 cookies_path = os.path.expanduser(cookies_path)
+                logger.info(f"Expanded ~ to: {cookies_path}")
 
         if not Path(cookies_path).exists():
             await send_log(f"Cookies file not found at {cookies_path}", "error")
