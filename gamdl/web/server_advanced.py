@@ -385,8 +385,8 @@ async def root():
 
             <!-- View Navigation -->
             <div class="nav-tabs">
-                <button class="nav-tab active" onclick="switchView('library')">Library Browser</button>
-                <button class="nav-tab" onclick="switchView('downloads')">URL Downloads</button>
+                <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
+                <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
             </div>
 
             <!-- Library Browser View -->
@@ -395,9 +395,9 @@ async def root():
 
                 <!-- Library Type Tabs -->
                 <div class="nav-tabs">
-                    <button class="nav-tab active" onclick="switchLibraryTab('albums')">Albums</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('playlists')">Playlists</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('songs')">Songs</button>
+                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)">Albums</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)">Playlists</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)">Songs</button>
                 </div>
 
                 <!-- Albums Tab -->
@@ -588,7 +588,7 @@ async def root():
 
             function updateStatsFromLog(message, level) {
                 // Extract total tracks from "Found X track(s) to download"
-                const totalMatch = message.match(/Found (\d+) track\(s\) to download/);
+                const totalMatch = message.match(/Found (\\d+) track\\(s\\) to download/);
                 if (totalMatch) {
                     totalTracks = parseInt(totalMatch[1]);
                     document.getElementById('totalTracks').textContent = totalTracks;
@@ -773,12 +773,14 @@ async def root():
             let songsOffset = 0;
             let currentLibraryTab = 'albums';
 
-            function switchView(view) {
+            function switchView(view, clickedElement) {
                 // Update nav tabs
                 document.querySelectorAll('.nav-tabs > .nav-tab').forEach(tab => {
                     tab.classList.remove('active');
                 });
-                event.target.classList.add('active');
+                if (clickedElement) {
+                    clickedElement.classList.add('active');
+                }
 
                 // Show/hide views
                 document.getElementById('libraryView').classList.toggle('active', view === 'library');
@@ -790,12 +792,14 @@ async def root():
                 }
             }
 
-            function switchLibraryTab(tab) {
+            function switchLibraryTab(tab, clickedElement) {
                 // Update tabs
                 document.querySelectorAll('#libraryView .nav-tabs > .nav-tab').forEach(t => {
                     t.classList.remove('active');
                 });
-                event.target.classList.add('active');
+                if (clickedElement) {
+                    clickedElement.classList.add('active');
+                }
 
                 // Show/hide tab content
                 document.querySelectorAll('.tab-content').forEach(content => {
@@ -1015,7 +1019,8 @@ async def root():
                     sessionId = data.session_id;
 
                     // Switch to downloads view
-                    switchView('downloads');
+                    const downloadsTab = document.querySelectorAll('.nav-tabs > .nav-tab')[1];
+                    switchView('downloads', downloadsTab);
 
                     // Connect WebSocket
                     connectWebSocket(sessionId);
