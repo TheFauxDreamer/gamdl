@@ -96,6 +96,14 @@ class DownloadRequest(BaseModel):
     no_lyrics: bool = False
     extra_tags: bool = False
 
+    # Retry settings
+    max_retries: int = 3  # Number of retry attempts
+    retry_delay: int = 60  # Seconds to wait between retries
+
+    # Sleep/delay settings
+    song_delay: float = 0.0  # Seconds to wait after each song
+    queue_item_delay: float = 0.0  # Seconds to wait after each queue item (album/playlist)
+
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -286,7 +294,7 @@ async def broadcast_queue_update():
 
 async def process_queue():
     """Background task that processes the queue sequentially."""
-    global queue_processor_running, current_downloading_item
+    global queue_processor_running, current_downloading_item, queue_paused
 
     queue_processor_running = True
     logger.info("Queue processor started")
@@ -350,15 +358,37 @@ async def process_queue():
                 try:
                     await run_download_session(session_id, active_sessions[session_id], websocket)
 
+                    # Success - apply queue item delay if configured
+                    request = next_item.download_request
+                    queue_item_delay = getattr(request, 'queue_item_delay', 0.0)
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
+
+                    if queue_item_delay > 0:
+                        logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
+                        await asyncio.sleep(queue_item_delay)
+
                 except Exception as e:
+                    # Download failed (after retries exhausted)
                     logger.error(f"Error processing queue item: {e}", exc_info=True)
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.FAILED
                         next_item.error_message = str(e)
                         next_item.completed_at = datetime.now()
+
+                        # PAUSE THE QUEUE as per user requirement
+                        queue_paused = True
+
+                    logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
+
+                    await websocket.send_json({
+                        "type": "log",
+                        "data": "⚠️ Queue paused due to download failures. Please review errors and resume manually.",
+                        "level": "error"
+                    })
             else:
                 # No WebSocket connection, run without it
                 logger.warning(f"No WebSocket connection for session {session_id}, running in background")
@@ -369,15 +399,31 @@ async def process_queue():
 
                     await run_download_session(session_id, active_sessions[session_id], DummyWebSocket())
 
+                    # Success - apply queue item delay if configured
+                    request = next_item.download_request
+                    queue_item_delay = getattr(request, 'queue_item_delay', 0.0)
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
+
+                    if queue_item_delay > 0:
+                        logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
+                        await asyncio.sleep(queue_item_delay)
+
                 except Exception as e:
+                    # Download failed (after retries exhausted)
                     logger.error(f"Error processing queue item: {e}", exc_info=True)
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.FAILED
                         next_item.error_message = str(e)
                         next_item.completed_at = datetime.now()
+
+                        # PAUSE THE QUEUE as per user requirement
+                        queue_paused = True
+
+                    logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
 
             # Cleanup
             with queue_lock:
@@ -390,6 +436,11 @@ async def process_queue():
 
             # Broadcast queue update
             await broadcast_queue_update()
+
+            # If queue was paused due to failure, break out of loop
+            if queue_paused:
+                logger.info("Queue processor stopping due to pause")
+                break
 
     finally:
         queue_processor_running = False
@@ -1187,6 +1238,31 @@ async def root():
                     </label>
                 </div>
 
+                <h3>⏱️ Retry & Delay Options</h3>
+                <div class="form-group">
+                    <label for="maxRetries">Max Retries:</label>
+                    <input type="number" id="maxRetries" name="maxRetries" min="0" max="10" value="3">
+                    <small>Number of times to retry a failed download (0 = no retries)</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="retryDelay">Retry Delay (seconds):</label>
+                    <input type="number" id="retryDelay" name="retryDelay" min="0" max="300" value="60">
+                    <small>Seconds to wait before retrying a failed download</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="songDelay">Song Delay (seconds):</label>
+                    <input type="number" id="songDelay" name="songDelay" min="0" max="60" step="0.5" value="0">
+                    <small>Seconds to wait after each individual song download</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="queueItemDelay">Queue Item Delay (seconds):</label>
+                    <input type="number" id="queueItemDelay" name="queueItemDelay" min="0" max="300" step="1" value="0">
+                    <small>Seconds to wait after completing each album/playlist</small>
+                </div>
+
                 <div class="button-group">
                     <button type="button" onclick="saveAllSettings()">Save Settings</button>
                 </div>
@@ -1401,6 +1477,10 @@ async def root():
                     no_cover: document.getElementById('noCover').checked,
                     no_lyrics: document.getElementById('noLyrics').checked,
                     extra_tags: document.getElementById('extraTags').checked,
+                    max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
+                    retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
+                    song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
+                    queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
                 };
 
                 document.getElementById('downloadBtn').disabled = true;
@@ -1689,6 +1769,10 @@ async def root():
                             display_title: displayTitle,
                             cookies_path: document.getElementById('cookiesPath').value,
                             output_path: document.getElementById('outputPath').value,
+                            max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
+                            retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
+                            song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
+                            queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
                         })
                     });
 
@@ -1698,9 +1782,6 @@ async def root():
                     }
 
                     const data = await response.json();
-
-                    // Item added to queue - show brief notification
-                    alert(`Added to queue: ${displayTitle}`);
 
                     // Refresh queue to show the new item
                     await refreshQueueStatus();
@@ -1740,6 +1821,12 @@ async def root():
                 const noLyrics = localStorage.getItem('gamdl_no_lyrics');
                 const extraTags = localStorage.getItem('gamdl_extra_tags');
 
+                // Retry/delay options
+                const maxRetries = localStorage.getItem('gamdl_max_retries');
+                const retryDelay = localStorage.getItem('gamdl_retry_delay');
+                const songDelay = localStorage.getItem('gamdl_song_delay');
+                const queueItemDelay = localStorage.getItem('gamdl_queue_item_delay');
+
                 // Apply saved values
                 if (cookiesPath) document.getElementById('cookiesPath').value = cookiesPath;
                 if (outputPath) document.getElementById('outputPath').value = outputPath;
@@ -1750,6 +1837,10 @@ async def root():
                 if (noCover) document.getElementById('noCover').checked = noCover === 'true';
                 if (noLyrics) document.getElementById('noLyrics').checked = noLyrics === 'true';
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
+                if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
+                if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
+                if (songDelay) document.getElementById('songDelay').value = songDelay;
+                if (queueItemDelay) document.getElementById('queueItemDelay').value = queueItemDelay;
             }
 
             function savePreferences() {
@@ -1770,6 +1861,12 @@ async def root():
                 const noLyrics = document.getElementById('noLyrics').checked;
                 const extraTags = document.getElementById('extraTags').checked;
 
+                // Retry/delay options
+                const maxRetries = document.getElementById('maxRetries').value;
+                const retryDelay = document.getElementById('retryDelay').value;
+                const songDelay = document.getElementById('songDelay').value;
+                const queueItemDelay = document.getElementById('queueItemDelay').value;
+
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
@@ -1780,6 +1877,10 @@ async def root():
                 localStorage.setItem('gamdl_no_cover', noCover);
                 localStorage.setItem('gamdl_no_lyrics', noLyrics);
                 localStorage.setItem('gamdl_extra_tags', extraTags);
+                localStorage.setItem('gamdl_max_retries', maxRetries);
+                localStorage.setItem('gamdl_retry_delay', retryDelay);
+                localStorage.setItem('gamdl_song_delay', songDelay);
+                localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
             }
 
             function saveAllSettings() {
@@ -1898,6 +1999,13 @@ async def root():
                 if (queueData.paused) {
                     pauseBtn.textContent = '▶ Resume';
                     pauseBtn.style.background = '#34c759';
+
+                    // Show warning if there are failed items
+                    const hasFailed = queueData.items.some(item => item.status === 'failed');
+                    if (hasFailed) {
+                        pauseBtn.textContent = '⚠️ Resume (Check Errors)';
+                        pauseBtn.style.background = '#ff9500';  // Orange warning color
+                    }
                 } else {
                     pauseBtn.textContent = '⏸ Pause';
                     pauseBtn.style.background = '#007aff';
@@ -2010,6 +2118,10 @@ async def root():
             document.getElementById('noCover').addEventListener('change', savePreferences);
             document.getElementById('noLyrics').addEventListener('change', savePreferences);
             document.getElementById('extraTags').addEventListener('change', savePreferences);
+            document.getElementById('maxRetries').addEventListener('change', savePreferences);
+            document.getElementById('retryDelay').addEventListener('change', savePreferences);
+            document.getElementById('songDelay').addEventListener('change', savePreferences);
+            document.getElementById('queueItemDelay').addEventListener('change', savePreferences);
 
             // Load albums and preferences on page load
             document.addEventListener('DOMContentLoaded', () => {
@@ -2447,6 +2559,56 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             websocket_clients.remove(websocket)
 
 
+async def download_with_retry(
+    downloader,
+    download_item,
+    max_retries: int,
+    retry_delay: int,
+    websocket: WebSocket,
+    session_id: str
+) -> bool:
+    """Download item with retry logic. Returns True if successful, False if all retries exhausted."""
+    import asyncio
+
+    attempts = 0
+    while attempts <= max_retries:
+        try:
+            # Attempt download
+            await downloader.download(download_item)
+            return True  # Success
+
+        except Exception as e:
+            attempts += 1
+            error_msg = str(e)
+
+            if attempts <= max_retries:
+                # Still have retries left
+                retry_num = attempts
+                await websocket.send_json({
+                    "type": "log",
+                    "data": f"Download failed (attempt {retry_num}/{max_retries + 1}): {error_msg}",
+                    "level": "warning"
+                })
+                await websocket.send_json({
+                    "type": "log",
+                    "data": f"Retrying in {retry_delay} seconds...",
+                    "level": "info"
+                })
+
+                # Wait for retry delay
+                await asyncio.sleep(retry_delay)
+            else:
+                # All retries exhausted
+                await websocket.send_json({
+                    "type": "log",
+                    "data": f"Download failed after {max_retries + 1} attempts: {error_msg}",
+                    "level": "error"
+                })
+                return False  # Failure
+
+    return False
+
+
 async def run_download_session(session_id: str, session: dict, websocket: WebSocket):
     """Run the actual download process with progress updates."""
     request: DownloadRequest = session["request"]
@@ -2464,6 +2626,15 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
 
     try:
         await send_log("Initializing Apple Music API...")
+
+        # Extract retry/delay settings
+        max_retries = getattr(request, 'max_retries', 3)
+        retry_delay = getattr(request, 'retry_delay', 60)
+        song_delay = getattr(request, 'song_delay', 0.0)
+        queue_item_delay = getattr(request, 'queue_item_delay', 0.0)
+
+        # Track if any download failed after retries
+        any_failed = False
 
         # Initialize API - handle empty strings and expand ~ paths
         cookies_path = request.cookies_path
@@ -2626,17 +2797,26 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
 
                     await send_log(f"[Track {download_index}/{len(download_queue)}] Downloading: {media_title}")
 
-                    try:
-                        await downloader.download(download_item)
+                    # Use retry wrapper instead of direct download
+                    success = await download_with_retry(
+                        downloader=downloader,
+                        download_item=download_item,
+                        max_retries=max_retries,
+                        retry_delay=retry_delay,
+                        websocket=websocket,
+                        session_id=session_id
+                    )
+
+                    if success:
                         await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
-                    except GamdlError as e:
-                        # Expected errors (file exists, not streamable, etc.) - show as warnings
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Skipped: {str(e)}", "warning")
-                        continue
-                    except Exception as e:
-                        # Unexpected errors - show as errors
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Error: {str(e)}", "error")
-                        continue
+                    else:
+                        any_failed = True
+                        await send_log(f"[Track {download_index}/{len(download_queue)}] Failed after retries: {media_title}", "error")
+
+                    # Apply song delay if configured
+                    if song_delay > 0:
+                        await send_log(f"Waiting {song_delay} seconds before next song...", "info")
+                        await asyncio.sleep(song_delay)
 
             except Exception as e:
                 await send_log(f"Error processing URL: {str(e)}", "error")
@@ -2647,6 +2827,10 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             if not download_queue:
                 await send_log("No download queue available, skipping URL", "warning")
                 continue
+
+        # If any download failed after retries, raise error to trigger queue pause
+        if any_failed:
+            raise Exception(f"One or more downloads failed after {max_retries + 1} attempts")
 
         await send_log("All downloads completed!", "success")
         await websocket.send_json({"type": "complete"})
@@ -2666,10 +2850,23 @@ async def health_check():
 def main(host: str = "127.0.0.1", port: int = 8080):
     """Start the web server."""
     import uvicorn
+    import webbrowser
+    import threading
+
+    url = f"http://{host}:{port}"
 
     print(f"\n🎵 gamdl Web UI starting...")
-    print(f"📡 Server: http://{host}:{port}")
+    print(f"📡 Server: {url}")
     print(f"⚡ Press Ctrl+C to stop\n")
+
+    # Open browser after a short delay to ensure server is ready
+    def open_browser():
+        import time
+        time.sleep(1.5)
+        webbrowser.open(url)
+
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
 
     uvicorn.run(app, host=host, port=port)
 

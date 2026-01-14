@@ -879,10 +879,23 @@ async def health_check():
 def main(host: str = "127.0.0.1", port: int = 8080):
     """Start the web server."""
     import uvicorn
+    import webbrowser
+    import threading
+
+    url = f"http://{host}:{port}"
 
     print(f"\n🎵 gamdl Web UI starting...")
-    print(f"📡 Server: http://{host}:{port}")
+    print(f"📡 Server: {url}")
     print(f"⚡ Press Ctrl+C to stop\n")
+
+    # Open browser after a short delay to ensure server is ready
+    def open_browser():
+        import time
+        time.sleep(1.5)
+        webbrowser.open(url)
+
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
 
     uvicorn.run(app, host=host, port=port)
 
