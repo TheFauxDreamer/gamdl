@@ -26,6 +26,7 @@ from gamdl.downloader.downloader_music_video import AppleMusicMusicVideoDownload
 from gamdl.downloader.downloader_uploaded_video import AppleMusicUploadedVideoDownloader
 from gamdl.downloader.enums import DownloadMode, RemuxMode
 from gamdl.downloader.exceptions import (
+    ExecutableNotFound,
     GamdlError,
     MediaFileExists,
     NotStreamable,
@@ -909,6 +910,22 @@ async def root():
                 padding: 40px;
                 color: #666;
             }
+
+            .spinner {
+                display: inline-block;
+                width: 40px;
+                height: 40px;
+                border: 4px solid #f3f3f3;
+                border-top: 4px solid #007aff;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin-bottom: 15px;
+            }
+
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
             #settingsView h2 {
                 margin-top: 0;
                 margin-bottom: 5px;
@@ -1243,6 +1260,84 @@ async def root():
                 color: #856404;
                 margin-bottom: 20px;
             }
+
+            /* Modal Styles */
+            .modal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.5);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 10000;
+            }
+
+            .modal-content {
+                background: white;
+                border-radius: 12px;
+                width: 90%;
+                max-width: 1200px;
+                max-height: 90vh;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            }
+
+            .modal-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 20px;
+                border-bottom: 1px solid #e0e0e0;
+            }
+
+            .modal-header h2 {
+                margin: 0;
+                font-size: 24px;
+            }
+
+            .modal-close {
+                background: none;
+                border: none;
+                font-size: 32px;
+                cursor: pointer;
+                color: #666;
+                padding: 0;
+                width: 40px;
+                height: 40px;
+                line-height: 1;
+            }
+
+            .modal-close:hover {
+                color: #333;
+            }
+
+            .modal-body {
+                flex: 1;
+                overflow-y: auto;
+                padding: 20px;
+            }
+
+            .modal-footer {
+                display: flex;
+                justify-content: flex-end;
+                gap: 10px;
+                padding: 20px;
+                border-top: 1px solid #e0e0e0;
+            }
+
+            .artist-section {
+                margin-bottom: 30px;
+            }
+
+            .artist-section h3 {
+                font-size: 20px;
+                font-weight: 600;
+                margin-bottom: 15px;
+            }
         </style>
     </head>
     <body>
@@ -1254,8 +1349,8 @@ async def root():
             <div class="nav-tabs">
                 <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
                 <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
-                <button class="nav-tab" onclick="switchView('settings', this)">Settings</button>
                 <button class="nav-tab" onclick="switchView('search', this)">Search</button>
+                <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
             </div>
 
             <!-- Library Browser View -->
@@ -1433,6 +1528,14 @@ async def root():
                     </label>
                 </div>
 
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="includeVideosInDiscography">
+                        <span>Include music videos in artist discography downloads</span>
+                    </label>
+                    <small>When downloading an artist's discography, also include their music videos</small>
+                </div>
+
                 <h3>Retry & Delay Options</h3>
                 <div class="form-group checkbox-group">
                     <label>
@@ -1491,6 +1594,7 @@ async def root():
                     <button class="nav-tab" onclick="switchSearchTab('albums', this)">Albums</button>
                     <button class="nav-tab" onclick="switchSearchTab('artists', this)">Artists</button>
                     <button class="nav-tab" onclick="switchSearchTab('playlists', this)">Playlists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)">Music Videos</button>
                 </div>
 
                 <!-- Error Display -->
@@ -1557,6 +1661,26 @@ async def root():
                         <div id="playlistsSearchGrid" class="library-grid"></div>
                         <div id="playlistsSearchLoadMore" class="load-more" style="display:none;">
                             <button onclick="loadMoreSearchResults('playlists')">Load More</button>
+                        </div>
+                    </div>
+
+                    <!-- Music Videos Tab -->
+                    <div id="musicVideosSearchTab" class="tab-content">
+                        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 12px; margin-bottom: 15px;">
+                            <strong style="color: #856404;">⚠️ Important:</strong> Music videos require <code>mp4decrypt</code> to be installed.
+                            <br>
+                            <small style="color: #856404;">
+                                Download from <a href="https://www.bento4.com/downloads/" target="_blank" style="color: #856404; text-decoration: underline;">bento4.com/downloads</a>,
+                                add to your system PATH, and restart the server. Downloads will fail without it.
+                            </small>
+                        </div>
+                        <div id="musicVideosSearchLoading" class="loading">Loading music videos...</div>
+                        <div id="musicVideosSearchEmpty" class="library-empty" style="display:none;">
+                            <p>No music videos found</p>
+                        </div>
+                        <div id="musicVideosSearchGrid" class="library-grid"></div>
+                        <div id="musicVideosSearchLoadMore" class="load-more" style="display:none;">
+                            <button onclick="loadMoreSearchResults('music-videos')">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -2159,7 +2283,8 @@ async def root():
                 songs: 0,
                 albums: 0,
                 artists: 0,
-                playlists: 0
+                playlists: 0,
+                'music-videos': 0
             };
 
             async function performSearch() {
@@ -2229,6 +2354,12 @@ async def root():
                     grid.appendChild(section);
                 }
 
+                if (data['music-videos'] && data['music-videos'].length > 0) {
+                    hasResults = true;
+                    const section = createResultSection('Music Videos', data['music-videos'], 'music-video');
+                    grid.appendChild(section);
+                }
+
                 if (!hasResults) {
                     empty.style.display = 'block';
                 }
@@ -2293,6 +2424,9 @@ async def root():
                     subtitle.textContent = item.artist || item.curator || '';
                 } else if (type === 'artist') {
                     subtitle.textContent = 'Artist';
+                } else if (type === 'music-video') {
+                    const duration = item.duration ? ` • ${Math.floor(item.duration / 60)}:${(item.duration % 60).toString().padStart(2, '0')}` : '';
+                    subtitle.textContent = `${item.artist}${duration}`;
                 }
                 div.appendChild(subtitle);
 
@@ -2306,6 +2440,31 @@ async def root():
                     downloadBtn.style.width = '100%';
                     downloadBtn.onclick = () => downloadSearchResult(item, type);
                     btnContainer.appendChild(downloadBtn);
+
+                    div.appendChild(btnContainer);
+                } else {
+                    // Artist-specific buttons
+                    const btnContainer = document.createElement('div');
+                    btnContainer.style.marginTop = '10px';
+                    btnContainer.style.display = 'flex';
+                    btnContainer.style.flexDirection = 'column';
+                    btnContainer.style.gap = '6px';
+
+                    // Download Discography button
+                    const discographyBtn = document.createElement('button');
+                    discographyBtn.textContent = 'Download Discography';
+                    discographyBtn.className = 'btn-primary';
+                    discographyBtn.style.width = '100%';
+                    discographyBtn.onclick = () => downloadArtistDiscography(item);
+                    btnContainer.appendChild(discographyBtn);
+
+                    // View Artist button
+                    const viewBtn = document.createElement('button');
+                    viewBtn.textContent = 'View All Content';
+                    viewBtn.className = 'btn-secondary';
+                    viewBtn.style.width = '100%';
+                    viewBtn.onclick = () => viewArtistContent(item);
+                    btnContainer.appendChild(viewBtn);
 
                     div.appendChild(btnContainer);
                 }
@@ -2322,17 +2481,34 @@ async def root():
                         return;
                     }
 
+                    // Helper function to get value or null (not empty string)
+                    const getValueOrNull = (id) => {
+                        const element = document.getElementById(id);
+                        if (!element) return null;
+                        const value = element.value;
+                        return value ? value : null;
+                    };
+
+                    // Helper function to get integer value or null
+                    const getIntOrNull = (id) => {
+                        const element = document.getElementById(id);
+                        if (!element) return null;
+                        const value = element.value;
+                        return value ? parseInt(value) : null;
+                    };
+
                     const response = await fetch('/api/download', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             urls: [url],
-                            cookies_path: document.getElementById('cookiesPath').value,
-                            output_path: document.getElementById('outputPath').value,
-                            song_codec: document.getElementById('songCodec').value,
-                            music_video_resolution: document.getElementById('musicVideoResolution').value,
-                            cover_size: document.getElementById('coverSize').value,
-                            cover_format: document.getElementById('coverFormat').value,
+                            cookies_path: getValueOrNull('cookiesPath'),
+                            output_path: getValueOrNull('outputPath'),
+                            song_codec: getValueOrNull('songCodec'),
+                            music_video_codec: getValueOrNull('musicVideoCodec'),
+                            music_video_resolution: getValueOrNull('musicVideoResolution'),
+                            cover_size: getIntOrNull('coverSize'),
+                            cover_format: getValueOrNull('coverFormat'),
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
@@ -2354,6 +2530,299 @@ async def root():
                 } catch (error) {
                     alert(`Error: ${error.message}`);
                 }
+            }
+
+            async function downloadArtistDiscography(artist) {
+                try {
+                    // Get user preference for including music videos
+                    const includeVideos = document.getElementById('includeVideosInDiscography').checked;
+
+                    // Show loading indicator
+                    const originalBtn = event.target;
+                    const originalText = originalBtn.textContent;
+                    originalBtn.textContent = 'Loading...';
+                    originalBtn.disabled = true;
+
+                    // Fetch artist's catalog
+                    const response = await fetch(
+                        `/api/artist/${artist.id}/catalog?include_music_videos=${includeVideos}`
+                    );
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to fetch artist catalog');
+                    }
+
+                    const catalog = await response.json();
+
+                    // Restore button
+                    originalBtn.textContent = originalText;
+                    originalBtn.disabled = false;
+
+                    if (catalog.urls.length === 0) {
+                        alert(`No content found for ${artist.name}`);
+                        return;
+                    }
+
+                    // Confirm download
+                    const videoText = includeVideos && catalog.music_videos.length > 0
+                        ? ` and ${catalog.music_videos.length} music videos`
+                        : '';
+                    const confirmed = confirm(
+                        `Download ${catalog.albums.length} albums${videoText} by ${artist.name}?\n\n` +
+                        `This will add ${catalog.total_items} items to the download queue.`
+                    );
+
+                    if (!confirmed) {
+                        return;
+                    }
+
+                    // Submit download request
+                    const downloadResponse = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            urls: catalog.urls,
+                            cookies_path: document.getElementById('cookiesPath').value,
+                            output_path: document.getElementById('outputPath').value,
+                            song_codec: document.getElementById('songCodec').value,
+                            music_video_resolution: document.getElementById('musicVideoResolution').value,
+                            cover_size: document.getElementById('coverSize').value,
+                            cover_format: document.getElementById('coverFormat').value,
+                            no_cover: document.getElementById('noCover').checked,
+                            no_lyrics: document.getElementById('noLyrics').checked,
+                            extra_tags: document.getElementById('extraTags').checked,
+                            enable_retry_delay: document.getElementById('enableRetryDelay').checked,
+                            max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
+                            retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
+                            song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
+                            queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                        })
+                    });
+
+                    if (downloadResponse.ok) {
+                        alert(`Added ${catalog.artist_name}'s discography (${catalog.total_items} items) to download queue`);
+                    } else {
+                        const error = await downloadResponse.json();
+                        alert(`Download failed: ${error.detail || 'Unknown error'}`);
+                    }
+
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            }
+
+            let currentArtistCatalog = null;
+            let selectedArtistItems = new Set();
+
+            async function viewArtistContent(artist) {
+                // Show modal
+                document.getElementById('artistModal').style.display = 'flex';
+                document.getElementById('artistModalTitle').textContent = `${artist.name} - All Content`;
+                document.getElementById('artistModalLoading').style.display = 'block';
+                document.getElementById('artistModalContent').style.display = 'none';
+
+                // Animated loading messages
+                const loadingMessages = [
+                    'Fetching artist catalog...',
+                    'Loading album details...',
+                    'Retrieving artwork and metadata...',
+                    'Almost there...'
+                ];
+                let messageIndex = 0;
+                const loadingTextElement = document.getElementById('artistModalLoadingText');
+                const loadingProgressElement = document.getElementById('artistModalLoadingProgress');
+
+                // Update loading message every 1.5 seconds
+                const loadingInterval = setInterval(() => {
+                    messageIndex = (messageIndex + 1) % loadingMessages.length;
+                    loadingTextElement.textContent = loadingMessages[messageIndex];
+                }, 1500);
+
+                try {
+                    // Show initial progress
+                    loadingProgressElement.textContent = 'This may take a few seconds for artists with many albums...';
+
+                    // Fetch artist catalog (always include music videos for viewing)
+                    const response = await fetch(`/api/artist/${artist.id}/catalog?include_music_videos=true`);
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to fetch artist content');
+                    }
+
+                    const catalog = await response.json();
+                    currentArtistCatalog = catalog;
+                    selectedArtistItems.clear();
+
+                    // Clear loading interval
+                    clearInterval(loadingInterval);
+
+                    // Hide loading, show content
+                    document.getElementById('artistModalLoading').style.display = 'none';
+                    document.getElementById('artistModalContent').style.display = 'block';
+
+                    // Display albums
+                    document.getElementById('artistAlbumsCount').textContent = catalog.albums.length;
+                    const albumsGrid = document.getElementById('artistAlbumsGrid');
+                    albumsGrid.innerHTML = '';
+
+                    catalog.albums.forEach(album => {
+                        const item = document.createElement('div');
+                        item.className = 'library-item';
+                        item.style.position = 'relative';
+
+                        // Checkbox overlay
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.setAttribute('data-url', album.url);
+                        checkbox.onchange = function() { toggleArtistItemSelection(this); };
+                        checkbox.style.position = 'absolute';
+                        checkbox.style.top = '10px';
+                        checkbox.style.left = '10px';
+                        checkbox.style.zIndex = '10';
+                        checkbox.style.width = '20px';
+                        checkbox.style.height = '20px';
+                        checkbox.style.cursor = 'pointer';
+                        item.appendChild(checkbox);
+
+                        // Artwork
+                        const img = document.createElement('img');
+                        img.src = album.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
+                        img.alt = album.name;
+                        item.appendChild(img);
+
+                        // Title
+                        const title = document.createElement('div');
+                        title.className = 'library-item-title';
+                        title.textContent = album.name;
+                        item.appendChild(title);
+
+                        // Subtitle
+                        const subtitle = document.createElement('div');
+                        subtitle.className = 'library-item-subtitle';
+                        subtitle.textContent = `${album.trackCount} tracks`;
+                        item.appendChild(subtitle);
+
+                        albumsGrid.appendChild(item);
+                    });
+
+                    // Display music videos if any
+                    if (catalog.music_videos.length > 0) {
+                        document.getElementById('artistVideosSection').style.display = 'block';
+                        document.getElementById('artistVideosCount').textContent = catalog.music_videos.length;
+                        const videosGrid = document.getElementById('artistVideosGrid');
+                        videosGrid.innerHTML = '';
+
+                        catalog.music_videos.forEach(video => {
+                            const item = document.createElement('div');
+                            item.className = 'library-item';
+                            item.style.position = 'relative';
+
+                            // Checkbox overlay
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.setAttribute('data-url', video.url);
+                            checkbox.onchange = function() { toggleArtistItemSelection(this); };
+                            checkbox.style.position = 'absolute';
+                            checkbox.style.top = '10px';
+                            checkbox.style.left = '10px';
+                            checkbox.style.zIndex = '10';
+                            checkbox.style.width = '20px';
+                            checkbox.style.height = '20px';
+                            checkbox.style.cursor = 'pointer';
+                            item.appendChild(checkbox);
+
+                            // Artwork
+                            const img = document.createElement('img');
+                            img.src = video.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
+                            img.alt = video.name;
+                            item.appendChild(img);
+
+                            // Title
+                            const title = document.createElement('div');
+                            title.className = 'library-item-title';
+                            title.textContent = video.name;
+                            item.appendChild(title);
+
+                            // Subtitle with duration
+                            const subtitle = document.createElement('div');
+                            subtitle.className = 'library-item-subtitle';
+                            const duration = video.duration ? `${Math.floor(video.duration / 60)}:${(video.duration % 60).toString().padStart(2, '0')}` : '';
+                            subtitle.textContent = duration;
+                            item.appendChild(subtitle);
+
+                            videosGrid.appendChild(item);
+                        });
+                    } else {
+                        document.getElementById('artistVideosSection').style.display = 'none';
+                    }
+
+                } catch (error) {
+                    // Clear loading interval on error
+                    clearInterval(loadingInterval);
+                    alert(`Error: ${error.message}`);
+                    closeArtistModal();
+                }
+            }
+
+            function toggleArtistItemSelection(checkbox) {
+                const url = checkbox.getAttribute('data-url');
+                if (checkbox.checked) {
+                    selectedArtistItems.add(url);
+                } else {
+                    selectedArtistItems.delete(url);
+                }
+            }
+
+            async function downloadSelectedArtistContent() {
+                if (selectedArtistItems.size === 0) {
+                    alert('Please select at least one item to download');
+                    return;
+                }
+
+                try {
+                    const urls = Array.from(selectedArtistItems);
+
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            urls: urls,
+                            cookies_path: document.getElementById('cookiesPath').value,
+                            output_path: document.getElementById('outputPath').value,
+                            song_codec: document.getElementById('songCodec').value,
+                            music_video_resolution: document.getElementById('musicVideoResolution').value,
+                            cover_size: document.getElementById('coverSize').value,
+                            cover_format: document.getElementById('coverFormat').value,
+                            no_cover: document.getElementById('noCover').checked,
+                            no_lyrics: document.getElementById('noLyrics').checked,
+                            extra_tags: document.getElementById('extraTags').checked,
+                            enable_retry_delay: document.getElementById('enableRetryDelay').checked,
+                            max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
+                            retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
+                            song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
+                            queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                        })
+                    });
+
+                    if (response.ok) {
+                        alert(`Added ${urls.length} items to download queue`);
+                        closeArtistModal();
+                    } else {
+                        const error = await response.json();
+                        alert(`Download failed: ${error.detail || 'Unknown error'}`);
+                    }
+
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            }
+
+            function closeArtistModal() {
+                document.getElementById('artistModal').style.display = 'none';
+                currentArtistCatalog = null;
+                selectedArtistItems.clear();
             }
 
             function switchSearchTab(tab, clickedElement) {
@@ -2379,6 +2848,7 @@ async def root():
                 document.getElementById('albumsSearchTab').classList.toggle('active', tab === 'albums');
                 document.getElementById('artistsSearchTab').classList.toggle('active', tab === 'artists');
                 document.getElementById('playlistsSearchTab').classList.toggle('active', tab === 'playlists');
+                document.getElementById('musicVideosSearchTab').classList.toggle('active', tab === 'music-videos');
 
                 currentSearchTab = tab;
 
@@ -2470,6 +2940,7 @@ async def root():
                 // Metadata options
                 const noLyrics = localStorage.getItem('gamdl_no_lyrics');
                 const extraTags = localStorage.getItem('gamdl_extra_tags');
+                const includeVideosInDiscography = localStorage.getItem('gamdl_include_videos_in_discography');
 
                 // Retry/delay options
                 const enableRetryDelay = localStorage.getItem('gamdl_enable_retry_delay');
@@ -2488,6 +2959,7 @@ async def root():
                 if (noCover) document.getElementById('noCover').checked = noCover === 'true';
                 if (noLyrics) document.getElementById('noLyrics').checked = noLyrics === 'true';
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
+                if (includeVideosInDiscography === 'true') document.getElementById('includeVideosInDiscography').checked = true;
                 if (enableRetryDelay !== null) document.getElementById('enableRetryDelay').checked = enableRetryDelay === 'true';
                 if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
@@ -2512,6 +2984,7 @@ async def root():
                 // Metadata options
                 const noLyrics = document.getElementById('noLyrics').checked;
                 const extraTags = document.getElementById('extraTags').checked;
+                const includeVideosInDiscography = document.getElementById('includeVideosInDiscography').checked;
 
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
@@ -2530,6 +3003,7 @@ async def root():
                 localStorage.setItem('gamdl_no_cover', noCover);
                 localStorage.setItem('gamdl_no_lyrics', noLyrics);
                 localStorage.setItem('gamdl_extra_tags', extraTags);
+                localStorage.setItem('gamdl_include_videos_in_discography', includeVideosInDiscography);
                 localStorage.setItem('gamdl_enable_retry_delay', enableRetryDelay);
                 localStorage.setItem('gamdl_max_retries', maxRetries);
                 localStorage.setItem('gamdl_retry_delay', retryDelay);
@@ -2795,6 +3269,7 @@ async def root():
             document.getElementById('noCover').addEventListener('change', savePreferences);
             document.getElementById('noLyrics').addEventListener('change', savePreferences);
             document.getElementById('extraTags').addEventListener('change', savePreferences);
+            document.getElementById('includeVideosInDiscography').addEventListener('change', savePreferences);
             document.getElementById('enableRetryDelay').addEventListener('change', function() {
                 savePreferences();
                 toggleRetryDelaySettings();
@@ -2812,6 +3287,42 @@ async def root():
                 startQueueRefresh();
             });
         </script>
+
+        <!-- Artist Content Modal -->
+        <div id="artistModal" class="modal" style="display:none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="artistModalTitle">Artist Content</h2>
+                    <button class="modal-close" onclick="closeArtistModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="artistModalLoading" class="loading">
+                        <div style="text-align: center;">
+                            <div class="spinner"></div>
+                            <p id="artistModalLoadingText">Fetching artist catalog...</p>
+                            <small id="artistModalLoadingProgress" style="color: #666;"></small>
+                        </div>
+                    </div>
+                    <div id="artistModalContent" style="display:none;">
+                        <!-- Albums Section -->
+                        <div class="artist-section">
+                            <h3>Albums (<span id="artistAlbumsCount">0</span>)</h3>
+                            <div id="artistAlbumsGrid" class="library-grid"></div>
+                        </div>
+
+                        <!-- Music Videos Section -->
+                        <div class="artist-section" id="artistVideosSection" style="display:none;">
+                            <h3>Music Videos (<span id="artistVideosCount">0</span>)</h3>
+                            <div id="artistVideosGrid" class="library-grid"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button onclick="downloadSelectedArtistContent()" class="btn-primary">Download Selected</button>
+                    <button onclick="closeArtistModal()" class="btn-secondary">Close</button>
+                </div>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -2885,7 +3396,7 @@ async def save_cookies_path_config(request_data: dict):
 @app.get("/api/search")
 async def search_apple_music(
     term: str,
-    types: str = "songs,albums,artists,playlists",
+    types: str = "songs,albums,artists,playlists,music-videos",
     limit: int = 25,
     offset: int = 0,
 ):
@@ -2980,6 +3491,24 @@ async def search_apple_music(
                 formatted_results["has_more"] = len(playlists_data) >= limit
                 formatted_results["next_offset"] = offset + len(playlists_data)
 
+        # Format music-videos
+        if "music-videos" in results:
+            music_videos_data = results["music-videos"].get("data", [])
+            formatted_results["music-videos"] = [
+                {
+                    "id": video["id"],
+                    "name": video["attributes"]["name"],
+                    "artist": video["attributes"]["artistName"],
+                    "artwork": video["attributes"]["artwork"]["url"].replace("{w}", "300").replace("{h}", "300") if "artwork" in video["attributes"] else None,
+                    "duration": video["attributes"].get("durationInMillis", 0) // 1000,  # Convert to seconds
+                    "url": video["attributes"]["url"],
+                }
+                for video in music_videos_data
+            ]
+            if "has_more" not in formatted_results:
+                formatted_results["has_more"] = len(music_videos_data) >= limit
+                formatted_results["next_offset"] = offset + len(music_videos_data)
+
         return formatted_results
 
     except Exception as e:
@@ -2987,6 +3516,146 @@ async def search_apple_music(
         raise HTTPException(
             status_code=500,
             detail=f"Search failed: {str(e)}"
+        )
+
+
+@app.get("/api/artist/{artist_id}/catalog")
+async def get_artist_catalog(
+    artist_id: str,
+    include_music_videos: bool = False,
+):
+    """Get an artist's complete catalog (albums, singles, music videos)."""
+    if not hasattr(app.state, "api") or app.state.api is None:
+        raise HTTPException(
+            status_code=401,
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+        )
+
+    api = app.state.api
+
+    try:
+        # Determine what to include
+        include_types = "albums"
+        if include_music_videos:
+            include_types += ",music-videos"
+
+        # Fetch artist data with relationships
+        artist_data = await api.get_artist(
+            artist_id=artist_id,
+            include=include_types,
+            limit=100  # Get up to 100 of each type
+        )
+
+        if not artist_data:
+            raise HTTPException(
+                status_code=404,
+                detail="Artist not found"
+            )
+
+        # Extract artist info
+        artist_info = artist_data.get("data", [{}])[0]
+        artist_name = artist_info.get("attributes", {}).get("name", "Unknown Artist")
+
+        # Extract album and music video IDs from relationships
+        relationships = artist_info.get("relationships", {})
+        album_ids = []
+        video_ids = []
+
+        if "albums" in relationships:
+            albums_data = relationships["albums"].get("data", [])
+            album_ids = [album["id"] for album in albums_data]
+
+        if include_music_videos and "music-videos" in relationships:
+            videos_data = relationships["music-videos"].get("data", [])
+            video_ids = [video["id"] for video in videos_data]
+
+        # Fetch full details for each album using get_album()
+        albums = []
+        for album_id in album_ids:
+            try:
+                album_data = await api.get_album(album_id=album_id)
+                if album_data and "data" in album_data:
+                    album_info = album_data["data"][0]
+                    attributes = album_info.get("attributes", {})
+
+                    albums.append({
+                        "id": album_id,
+                        "type": "albums",
+                        "name": attributes.get("name", f"Album {album_id}"),
+                        "artist": attributes.get("artistName", artist_name),
+                        "artwork": attributes.get("artwork", {}).get("url", "").replace("{w}", "300").replace("{h}", "300") if "artwork" in attributes else None,
+                        "trackCount": attributes.get("trackCount", 0),
+                        "releaseDate": attributes.get("releaseDate", ""),
+                        "url": f"https://music.apple.com/{api.storefront}/album/{album_id}"
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch album {album_id}: {e}")
+                # Still add it with minimal info so download URL works
+                albums.append({
+                    "id": album_id,
+                    "type": "albums",
+                    "name": f"Album {album_id}",
+                    "artist": artist_name,
+                    "artwork": None,
+                    "trackCount": 0,
+                    "releaseDate": "",
+                    "url": f"https://music.apple.com/{api.storefront}/album/{album_id}"
+                })
+
+        # Fetch full details for each music video using get_music_video()
+        music_videos = []
+        for video_id in video_ids:
+            try:
+                video_data = await api.get_music_video(music_video_id=video_id)
+                if video_data and "data" in video_data:
+                    video_info = video_data["data"][0]
+                    attributes = video_info.get("attributes", {})
+
+                    music_videos.append({
+                        "id": video_id,
+                        "type": "music-videos",
+                        "name": attributes.get("name", f"Video {video_id}"),
+                        "artist": attributes.get("artistName", artist_name),
+                        "artwork": attributes.get("artwork", {}).get("url", "").replace("{w}", "300").replace("{h}", "300") if "artwork" in attributes else None,
+                        "duration": attributes.get("durationInMillis", 0) // 1000,
+                        "releaseDate": attributes.get("releaseDate", ""),
+                        "url": f"https://music.apple.com/{api.storefront}/music-video/{video_id}"
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch music video {video_id}: {e}")
+                # Still add it with minimal info
+                music_videos.append({
+                    "id": video_id,
+                    "type": "music-videos",
+                    "name": f"Video {video_id}",
+                    "artist": artist_name,
+                    "artwork": None,
+                    "duration": 0,
+                    "releaseDate": "",
+                    "url": f"https://music.apple.com/{api.storefront}/music-video/{video_id}"
+                })
+
+        # Compile URLs for download
+        all_urls = [item["url"] for item in albums]
+        if include_music_videos:
+            all_urls.extend([item["url"] for item in music_videos])
+
+        return {
+            "artist_id": artist_id,
+            "artist_name": artist_name,
+            "albums": albums,
+            "music_videos": music_videos,
+            "urls": all_urls,
+            "total_items": len(all_urls)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get artist catalog: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get artist catalog: {str(e)}"
         )
 
 
@@ -3497,9 +4166,42 @@ async def download_with_retry(
             })
             return True  # Skip, don't retry (retrying won't fix these issues)
 
+        except ExecutableNotFound as e:
+            # Missing required executable (e.g., mp4decrypt for music videos)
+            error_msg = str(e)
+
+            # Check if it's specifically mp4decrypt
+            if "mp4decrypt" in error_msg.lower():
+                await websocket.send_json({
+                    "type": "log",
+                    "message": "Music videos require mp4decrypt to be installed.",
+                    "level": "error"
+                })
+                await websocket.send_json({
+                    "type": "log",
+                    "message": "Download mp4decrypt from: https://www.bento4.com/downloads/",
+                    "level": "error"
+                })
+                await websocket.send_json({
+                    "type": "log",
+                    "message": "Add mp4decrypt to your system PATH and restart the server.",
+                    "level": "error"
+                })
+            else:
+                await websocket.send_json({
+                    "type": "log",
+                    "message": f"Required executable not found: {error_msg}",
+                    "level": "error"
+                })
+
+            return False  # Mark as FAILED (not success) so queue pauses
+
         except Exception as e:
             attempts += 1
             error_msg = str(e)
+
+            # Log the full exception for debugging
+            logger.exception(f"Download attempt {attempts} failed with exception:")
 
             if attempts <= max_retries:
                 # Still have retries left
@@ -3524,6 +4226,7 @@ async def download_with_retry(
                     "message": f"Download failed after {max_retries + 1} attempts: {error_msg}",
                     "level": "error"
                 })
+                logger.error(f"Full error details: {type(e).__name__}: {error_msg}")
                 return False  # Failure
 
     return False
