@@ -125,7 +125,7 @@ class AppleMusicApi:
                 "l": self.language,
             },
             follow_redirects=True,
-            timeout=60.0,
+            timeout=300.0,
         )
 
     async def _get_token(self) -> str:

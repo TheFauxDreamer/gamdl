@@ -26,6 +26,7 @@ from gamdl.downloader.downloader_music_video import AppleMusicMusicVideoDownload
 from gamdl.downloader.downloader_uploaded_video import AppleMusicUploadedVideoDownloader
 from gamdl.downloader.enums import DownloadMode, RemuxMode
 from gamdl.downloader.exceptions import (
+    DependencyMissing,
     ExecutableNotFound,
     GamdlError,
     MediaFileExists,
@@ -465,6 +466,22 @@ async def process_queue():
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
                         await asyncio.sleep(queue_item_delay)
+
+                except DependencyMissing as e:
+                    # Dependency missing - mark as failed but DON'T pause queue
+                    logger.warning(f"Dependency missing for queue item {next_item.id}: {e}")
+
+                    with queue_lock:
+                        next_item.status = QueueItemStatus.FAILED
+                        next_item.error_message = str(e)
+                        next_item.completed_at = datetime.now()
+                        # Don't set queue_paused - let queue continue
+
+                    await websocket.send_json({
+                        "type": "log",
+                        "message": f"Item failed due to missing dependency: {str(e)}. Queue will continue.",
+                        "level": "warning"
+                    })
 
                 except Exception as e:
                     # Download failed (after retries exhausted)
@@ -1052,9 +1069,9 @@ async def root():
             .queue-item {
                 background: white;
                 border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 12px;
-                margin-bottom: 10px;
+                border-radius: 4px;
+                padding: 8px 10px;
+                margin-bottom: 6px;
                 transition: all 0.2s;
             }
             .queue-item:hover {
@@ -1083,13 +1100,13 @@ async def root():
                 display: flex;
                 justify-content: space-between;
                 align-items: flex-start;
-                margin-bottom: 8px;
+                margin-bottom: 4px;
             }
             .queue-item-title {
                 font-weight: 600;
-                font-size: 14px;
+                font-size: 13px;
                 color: #333;
-                margin-bottom: 4px;
+                margin-bottom: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
@@ -1165,34 +1182,34 @@ async def root():
                 margin-bottom: 10px;
             }
             .queue-item-icon {
-                font-size: 16px;
-                margin-right: 8px;
+                font-size: 14px;
+                margin-right: 6px;
             }
             .queue-item-meta {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 8px;
-                font-size: 12px;
+                margin-bottom: 4px;
+                font-size: 11px;
             }
             .queue-item-info {
-                font-size: 11px;
+                font-size: 10px;
                 color: #007aff;
-                margin-bottom: 8px;
+                margin-bottom: 4px;
             }
             .queue-item-progress {
-                font-size: 12px;
+                font-size: 11px;
                 color: #34c759;
                 font-weight: 500;
-                margin-bottom: 8px;
+                margin-bottom: 4px;
             }
             .queue-item-error {
-                font-size: 11px;
+                font-size: 10px;
                 color: #ff3b30;
                 background: #fff5f5;
-                padding: 6px 8px;
-                border-radius: 4px;
-                margin-bottom: 8px;
+                padding: 4px 6px;
+                border-radius: 3px;
+                margin-bottom: 4px;
                 word-break: break-word;
             }
             .queue-item-remove,
@@ -2521,9 +2538,7 @@ async def root():
                         })
                     });
 
-                    if (response.ok) {
-                        alert(`Added "${item.name}" to download queue`);
-                    } else {
+                    if (!response.ok) {
                         const error = await response.json();
                         alert(`Download failed: ${error.detail || 'Unknown error'}`);
                     }
@@ -2601,9 +2616,7 @@ async def root():
                         })
                     });
 
-                    if (downloadResponse.ok) {
-                        alert(`Added ${catalog.artist_name}'s discography (${catalog.total_items} items) to download queue`);
-                    } else {
+                    if (!downloadResponse.ok) {
                         const error = await downloadResponse.json();
                         alert(`Download failed: ${error.detail || 'Unknown error'}`);
                     }
@@ -2808,7 +2821,6 @@ async def root():
                     });
 
                     if (response.ok) {
-                        alert(`Added ${urls.length} items to download queue`);
                         closeArtistModal();
                     } else {
                         const error = await response.json();
@@ -3194,11 +3206,11 @@ async def root():
                     const urlInfo = item.url_count > 1 ?
                         `<div class="queue-item-info">${item.url_count} URLs</div>` : '';
 
-                    // Calculate and display progress percentage
+                    // Calculate and display progress percentage inline with status
                     let progressInfo = '';
                     if (item.progress_total > 0 && item.status === 'downloading') {
                         const percentage = Math.round((item.progress_current / item.progress_total) * 100);
-                        progressInfo = `<div class="queue-item-progress">${item.progress_current}/${item.progress_total} (${percentage}%)</div>`;
+                        progressInfo = ` - ${item.progress_current}/${item.progress_total} (${percentage}%)`;
                     }
 
                     return `
@@ -3209,9 +3221,8 @@ async def root():
                             </div>
                             <div class="queue-item-meta">
                                 <span class="queue-item-type">${escapeHtml(item.display_type)}</span>
-                                <span class="queue-item-status">${statusText}</span>
+                                <span class="queue-item-status">${statusText}${progressInfo}</span>
                             </div>
-                            ${progressInfo}
                             ${urlInfo}
                             ${errorMessage}
                             <div class="queue-item-actions">
@@ -3225,6 +3236,9 @@ async def root():
             function viewDownloadProgress(itemId) {
                 // Switch to Downloads view
                 switchView('downloads', document.querySelector('[onclick*="downloads"]'));
+
+                // Show the progress container
+                document.getElementById('progressContainer').classList.add('active');
 
                 // The WebSocket should already be connected for this item
                 // If not, we can reconnect using the item ID
@@ -4169,6 +4183,7 @@ async def download_with_retry(
 
         except ExecutableNotFound as e:
             # Missing required executable (e.g., mp4decrypt for music videos)
+            # Don't retry - installation required, so re-raise immediately
             error_msg = str(e)
 
             # Check if it's specifically mp4decrypt
@@ -4195,7 +4210,8 @@ async def download_with_retry(
                     "level": "error"
                 })
 
-            return False  # Mark as FAILED (not success) so queue pauses
+            # Re-raise with clear message so it's not retried
+            raise ExecutableNotFound(error_msg)
 
         except Exception as e:
             attempts += 1
@@ -4441,20 +4457,31 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                         await broadcast_queue_update()
 
                     # Use retry wrapper instead of direct download
-                    success = await download_with_retry(
-                        downloader=downloader,
-                        download_item=download_item,
-                        max_retries=max_retries,
-                        retry_delay=retry_delay,
-                        websocket=websocket,
-                        session_id=session_id
-                    )
+                    try:
+                        success = await download_with_retry(
+                            downloader=downloader,
+                            download_item=download_item,
+                            max_retries=max_retries,
+                            retry_delay=retry_delay,
+                            websocket=websocket,
+                            session_id=session_id
+                        )
 
-                    if success:
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
-                    else:
-                        any_failed = True
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Failed after retries: {media_title}", "error")
+                        if success:
+                            await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
+                        else:
+                            any_failed = True
+                            await send_log(f"[Track {download_index}/{len(download_queue)}] Failed after retries: {media_title}", "error")
+
+                    except ExecutableNotFound as e:
+                        # Missing executable - raise DependencyMissing to mark as failed but continue queue
+                        error_msg = str(e)
+                        if "mp4decrypt" in error_msg.lower():
+                            await send_log(f"[Track {download_index}/{len(download_queue)}] Failed: mp4decrypt dependency missing", "error")
+                            raise DependencyMissing("mp4decrypt")
+                        else:
+                            await send_log(f"[Track {download_index}/{len(download_queue)}] Failed: {error_msg}", "error")
+                            raise DependencyMissing(error_msg)
 
                     # Apply song delay if configured
                     if song_delay > 0:
@@ -4482,6 +4509,7 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         logger.error(f"Download session error: {e}", exc_info=True)
         await send_log(f"Fatal error: {str(e)}", "error")
         await websocket.send_json({"type": "complete"})
+        raise  # Re-raise to propagate to process_queue()
 
 
 @app.get("/health")

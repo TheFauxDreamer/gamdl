@@ -30,3 +30,9 @@ class SyncedLyricsOnly(GamdlError):
 class UnsupportedMediaType(GamdlError):
     def __init__(self, media_type: str):
         super().__init__(f"Unsupported media type: {media_type}")
+
+
+class DependencyMissing(GamdlError):
+    """Raised when a required dependency is missing. Queue should continue but item marked as failed."""
+    def __init__(self, dependency: str):
+        super().__init__(f"{dependency} dependency missing")

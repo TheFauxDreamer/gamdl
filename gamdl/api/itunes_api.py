@@ -37,7 +37,7 @@ class ItunesApi:
             headers={
                 "X-Apple-Store-Front": f"{self.storefront_id} t:music31",
             },
-            timeout=60.0,
+            timeout=300.0,
         )
 
     async def get_lookup_result(
