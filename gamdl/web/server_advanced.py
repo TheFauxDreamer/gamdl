@@ -397,19 +397,34 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
         # Get webUI config for default settings
         config = load_webui_config()
 
+        # Helper to convert empty strings to None
+        def clean_config_value(key, default=None):
+            value = config.get(key, default)
+            if isinstance(value, str) and value.strip() == "":
+                return None
+            return value
+
         # Create download request with default settings
         download_request = DownloadRequest(
             urls=[track_url],
-            cookies_path=config.get('cookies_path'),
-            output_path=config.get('output_path'),
-            temp_path=config.get('temp_path'),
-            final_path_template=config.get('final_path_template'),
-            cover_format=config.get('cover_format'),
-            cover_size=config.get('cover_size'),
-            song_codec=config.get('song_codec'),
+            cookies_path=clean_config_value('cookies_path'),
+            output_path=clean_config_value('output_path'),
+            temp_path=clean_config_value('temp_path'),
+            final_path_template=clean_config_value('final_path_template'),
+            cover_format=clean_config_value('cover_format'),
+            cover_size=clean_config_value('cover_size'),
+            song_codec=clean_config_value('song_codec'),
+            music_video_codec=clean_config_value('music_video_codec'),
+            music_video_resolution=clean_config_value('music_video_resolution'),
             no_cover=config.get('no_cover', False),
             no_lyrics=config.get('no_lyrics', False),
             extra_tags=config.get('extra_tags', False),
+            enable_retry_delay=config.get('enable_retry_delay', True),
+            max_retries=config.get('max_retries', 3),
+            retry_delay=config.get('retry_delay', 60),
+            song_delay=config.get('song_delay', 0.0),
+            queue_item_delay=config.get('queue_item_delay', 0.0),
+            continue_on_error=config.get('continue_on_error', False),
         )
 
         # Add to queue with proper display info
@@ -441,18 +456,33 @@ async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
 
     config = load_webui_config()
 
+    # Helper to convert empty strings to None
+    def clean_config_value(key, default=None):
+        value = config.get(key, default)
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
     download_request = DownloadRequest(
         urls=[track_url],
-        cookies_path=config.get('cookies_path'),
-        output_path=config.get('output_path'),
-        temp_path=config.get('temp_path'),
-        final_path_template=config.get('final_path_template'),
-        cover_format=config.get('cover_format'),
-        cover_size=config.get('cover_size'),
-        song_codec=config.get('song_codec'),
+        cookies_path=clean_config_value('cookies_path'),
+        output_path=clean_config_value('output_path'),
+        temp_path=clean_config_value('temp_path'),
+        final_path_template=clean_config_value('final_path_template'),
+        cover_format=clean_config_value('cover_format'),
+        cover_size=clean_config_value('cover_size'),
+        song_codec=clean_config_value('song_codec'),
+        music_video_codec=clean_config_value('music_video_codec'),
+        music_video_resolution=clean_config_value('music_video_resolution'),
         no_cover=config.get('no_cover', False),
         no_lyrics=config.get('no_lyrics', False),
         extra_tags=config.get('extra_tags', False),
+        enable_retry_delay=config.get('enable_retry_delay', True),
+        max_retries=config.get('max_retries', 3),
+        retry_delay=config.get('retry_delay', 60),
+        song_delay=config.get('song_delay', 0.0),
+        queue_item_delay=config.get('queue_item_delay', 0.0),
+        continue_on_error=config.get('continue_on_error', False),
     )
 
     try:
@@ -3785,18 +3815,41 @@ async def root():
                 localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
                 localStorage.setItem('gamdl_continue_on_error', continueOnError);
 
-                // Also save cookies path to server-side config
-                if (cookiesPath && cookiesPath.trim() !== '') {
-                    fetch('/api/config/cookies-path', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({
-                            cookies_path: cookiesPath
-                        })
-                    }).catch(err => {
-                        console.error('Failed to save cookies path to server config:', err);
-                    });
-                }
+                // Also save ALL settings to server-side config for background downloads
+                fetch('/api/config/all-settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        // Paths
+                        cookies_path: cookiesPath,
+                        output_path: outputPath,
+
+                        // Audio options
+                        song_codec: songCodec,
+                        music_video_resolution: musicVideoResolution,
+
+                        // Cover art options
+                        cover_size: coverSize,
+                        cover_format: coverFormat,
+                        no_cover: noCover,
+
+                        // Metadata options
+                        no_lyrics: noLyrics,
+                        extra_tags: extraTags,
+
+                        // Retry/delay options
+                        enable_retry_delay: enableRetryDelay,
+                        max_retries: parseInt(maxRetries),
+                        retry_delay: parseInt(retryDelay),
+                        song_delay: parseFloat(songDelay),
+                        queue_item_delay: parseFloat(queueItemDelay),
+
+                        // Queue behavior options
+                        continue_on_error: continueOnError,
+                    })
+                }).catch(err => {
+                    console.error('Failed to save settings to server config:', err);
+                });
             }
 
             function saveAllSettings() {
@@ -4492,6 +4545,73 @@ async def save_cookies_path_config(request_data: dict):
     save_webui_config(config)
 
     return {"success": True, "message": "Cookies path saved to configuration"}
+
+
+@app.post("/api/config/all-settings")
+async def save_all_settings_config(request_data: dict):
+    """Save all user settings to server-side config for background downloads."""
+    # Load existing config
+    config = load_webui_config()
+
+    # Helper to convert empty strings to None
+    def clean_value(value):
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    # Update all settings from request
+    # Paths
+    if "cookies_path" in request_data:
+        config["cookies_path"] = clean_value(request_data["cookies_path"])
+    if "output_path" in request_data:
+        config["output_path"] = clean_value(request_data["output_path"])
+    if "temp_path" in request_data:
+        config["temp_path"] = clean_value(request_data["temp_path"])
+    if "final_path_template" in request_data:
+        config["final_path_template"] = clean_value(request_data["final_path_template"])
+
+    # Audio options
+    if "song_codec" in request_data:
+        config["song_codec"] = clean_value(request_data["song_codec"])
+    if "music_video_codec" in request_data:
+        config["music_video_codec"] = clean_value(request_data["music_video_codec"])
+    if "music_video_resolution" in request_data:
+        config["music_video_resolution"] = clean_value(request_data["music_video_resolution"])
+
+    # Cover art options
+    if "cover_size" in request_data:
+        config["cover_size"] = clean_value(request_data["cover_size"])
+    if "cover_format" in request_data:
+        config["cover_format"] = clean_value(request_data["cover_format"])
+    if "no_cover" in request_data:
+        config["no_cover"] = request_data["no_cover"]
+
+    # Metadata options
+    if "no_lyrics" in request_data:
+        config["no_lyrics"] = request_data["no_lyrics"]
+    if "extra_tags" in request_data:
+        config["extra_tags"] = request_data["extra_tags"]
+
+    # Retry/delay options
+    if "enable_retry_delay" in request_data:
+        config["enable_retry_delay"] = request_data["enable_retry_delay"]
+    if "max_retries" in request_data:
+        config["max_retries"] = request_data["max_retries"]
+    if "retry_delay" in request_data:
+        config["retry_delay"] = request_data["retry_delay"]
+    if "song_delay" in request_data:
+        config["song_delay"] = request_data["song_delay"]
+    if "queue_item_delay" in request_data:
+        config["queue_item_delay"] = request_data["queue_item_delay"]
+
+    # Queue behavior options
+    if "continue_on_error" in request_data:
+        config["continue_on_error"] = request_data["continue_on_error"]
+
+    # Save to disk
+    save_webui_config(config)
+
+    return {"success": True, "message": "All settings saved to configuration"}
 
 
 # =============================================================================
@@ -5478,6 +5598,28 @@ def parse_apple_music_error(exception: Exception) -> str:
     return error_str
 
 
+async def safe_send_log(websocket: WebSocket, message: str, level: str = "info"):
+    """Safely send log message via WebSocket and also log to logger."""
+    # Always log to logger for background mode
+    if level == "error":
+        logger.error(message)
+    elif level == "warning":
+        logger.warning(message)
+    else:
+        logger.info(message)
+
+    # Also try to send via WebSocket if available
+    if websocket:
+        try:
+            await websocket.send_json({
+                "type": "log",
+                "message": message,
+                "level": level,
+            })
+        except:
+            pass
+
+
 async def download_with_retry(
     downloader,
     download_item,
@@ -5507,7 +5649,9 @@ async def download_with_retry(
                 })
 
             # Attempt download
+            logger.info(f"Calling downloader.download() for track: {track_name}")
             await downloader.download(download_item)
+            logger.info(f"downloader.download() completed successfully for track: {track_name}")
 
             # Success! Log if this was after retries
             if attempts > 0 and max_retries > 0:
@@ -5578,33 +5722,20 @@ async def download_with_retry(
             logger.exception(f"Download attempt {attempts} failed:")
 
             # Send message to UI
-            await websocket.send_json({
-                "type": "log",
-                "message": f"Download failed (attempt {attempts}/{max_retries + 1}): {error_msg}",
-                "level": "warning"
-            })
+            await safe_send_log(websocket, f"Download failed (attempt {attempts}/{max_retries + 1}): {error_msg}", "warning")
 
             # Check if we should retry
             if attempts <= max_retries:
                 # Only sleep and retry if retries are enabled
                 if max_retries > 0:
-                    await websocket.send_json({
-                        "type": "log",
-                        "message": f"Retrying in {retry_delay} seconds...",
-                        "level": "info"
-                    })
+                    await safe_send_log(websocket, f"Retrying in {retry_delay} seconds...", "info")
                     await asyncio.sleep(retry_delay)
                 else:
                     # No retries configured, fail immediately
                     return False
             else:
                 # All retries exhausted
-                logger.error(f"Download failed after {attempts} attempts: {type(e).__name__}: {error_msg}")
-                await websocket.send_json({
-                    "type": "log",
-                    "message": f"Download failed after {max_retries + 1} attempts: {error_msg}",
-                    "level": "error"
-                })
+                await safe_send_log(websocket, f"Download failed after {max_retries + 1} attempts: {error_msg}", "error")
                 return False
 
     return False
@@ -5619,7 +5750,16 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
     logger.info(f"len(request.urls) = {len(request.urls) if request.urls else 'None'}")
 
     async def send_log(message: str, level: str = "info"):
-        """Send a log message via WebSocket."""
+        """Send a log message via WebSocket and to logger."""
+        # Always log to logger for background mode
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+        # Also try to send via WebSocket if available
         try:
             await websocket.send_json({
                 "type": "log",
