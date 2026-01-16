@@ -19,18 +19,19 @@ These work to a degree I haven't encountered major issues or bugs that break the
 - Delay between downloads
 - Search feature (no need to open a seperate apple music tab)
 - One-click, download entire artist discography (albums, songs, EPs)
+- Set a monitored playlist to download new additions automatically
 
 
 ## ⚠️ WIP Features
 These are in "active" development and in varying states of useability.
-- Set a monitored playlist and download new additions automatically
+
+- Apple Podcast Support
 
 
 ## 🗓️ Future Features
 These will come in time, I don't have a timeline tho.
 
 - Fix the "null songs" count in WebUI playlists
-- Apple Podcast Support
 
 -------------------------------------------------------------------------------------------------------------------------------
 
