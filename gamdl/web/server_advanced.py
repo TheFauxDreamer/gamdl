@@ -139,6 +139,9 @@ class DownloadRequest(BaseModel):
     song_delay: float = 0.0  # Seconds to wait after each song
     queue_item_delay: float = 0.0  # Seconds to wait after each queue item (album/playlist)
 
+    # Queue behavior
+    continue_on_error: bool = False  # Continue queue processing even if items fail
+
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -813,21 +816,35 @@ async def process_queue():
                     # Download failed (after retries exhausted)
                     logger.error(f"Error processing queue item: {e}", exc_info=True)
 
+                    # Check if we should continue on error
+                    request = next_item.download_request
+                    continue_on_error = getattr(request, 'continue_on_error', False)
+                    enable_retry_delay = getattr(request, 'enable_retry_delay', True)
+                    logger.info(f"[DEBUG] Settings - continue_on_error={continue_on_error}, enable_retry_delay={enable_retry_delay}")
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.FAILED
                         next_item.error_message = str(e)
                         next_item.completed_at = datetime.now()
 
-                        # PAUSE THE QUEUE as per user requirement
-                        queue_paused = True
+                        # Pause queue only if continue_on_error is disabled
+                        if not continue_on_error:
+                            queue_paused = True
 
-                    logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
-
-                    await websocket.send_json({
-                        "type": "log",
-                        "message": "Queue paused due to download failures. Please review errors and resume manually.",
-                        "level": "error"
-                    })
+                    if continue_on_error:
+                        logger.warning(f"Queue item {next_item.id} failed, but continuing due to continue_on_error setting")
+                        await websocket.send_json({
+                            "type": "log",
+                            "message": "Item failed, but queue will continue processing (continue_on_error enabled).",
+                            "level": "warning"
+                        })
+                    else:
+                        logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
+                        await websocket.send_json({
+                            "type": "log",
+                            "message": "Queue paused due to download failures. Please review errors and resume manually.",
+                            "level": "error"
+                        })
             else:
                 # No WebSocket connection, run without it
                 logger.warning(f"No WebSocket connection for session {session_id}, running in background")
@@ -865,15 +882,25 @@ async def process_queue():
                     # Download failed (after retries exhausted)
                     logger.error(f"Error processing queue item: {e}", exc_info=True)
 
+                    # Check if we should continue on error
+                    request = next_item.download_request
+                    continue_on_error = getattr(request, 'continue_on_error', False)
+                    enable_retry_delay = getattr(request, 'enable_retry_delay', True)
+                    logger.info(f"[DEBUG] Settings - continue_on_error={continue_on_error}, enable_retry_delay={enable_retry_delay}")
+
                     with queue_lock:
                         next_item.status = QueueItemStatus.FAILED
                         next_item.error_message = str(e)
                         next_item.completed_at = datetime.now()
 
-                        # PAUSE THE QUEUE as per user requirement
-                        queue_paused = True
+                        # Pause queue only if continue_on_error is disabled
+                        if not continue_on_error:
+                            queue_paused = True
 
-                    logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
+                    if continue_on_error:
+                        logger.warning(f"Queue item {next_item.id} failed, but continuing due to continue_on_error setting")
+                    else:
+                        logger.warning(f"Queue PAUSED due to retry exhaustion for item {next_item.id}")
 
             # Cleanup
             with queue_lock:
@@ -2184,6 +2211,15 @@ async def root():
                     </div>
                 </div>
 
+                <h3>Queue Behavior</h3>
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="continueOnError" name="continueOnError">
+                        <span>Continue queue on errors</span>
+                    </label>
+                    <small>When enabled, the queue will continue processing even if items fail (after retries are exhausted). When disabled, the queue will pause on failures.</small>
+                </div>
+
                 <div class="button-group">
                     <button type="button" onclick="saveAllSettings()">Save Settings</button>
                 </div>
@@ -2592,6 +2628,7 @@ async def root():
                     retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                     song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                     queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                    continue_on_error: document.getElementById('continueOnError').checked,
                 };
 
                 document.getElementById('downloadBtn').disabled = true;
@@ -2946,11 +2983,19 @@ async def root():
                             download_full: downloadFull,
                             cookies_path: document.getElementById('cookiesPath').value,
                             output_path: document.getElementById('outputPath').value,
+                            song_codec: document.getElementById('songCodec').value || null,
+                            cover_size: document.getElementById('coverSize').value ? parseInt(document.getElementById('coverSize').value) : null,
+                            music_video_resolution: document.getElementById('musicVideoResolution').value || null,
+                            cover_format: document.getElementById('coverFormat').value || null,
+                            no_cover: document.getElementById('noCover').checked,
+                            no_lyrics: document.getElementById('noLyrics').checked,
+                            extra_tags: document.getElementById('extraTags').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                            continue_on_error: document.getElementById('continueOnError').checked,
                         })
                     });
 
@@ -3221,6 +3266,7 @@ async def root():
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                            continue_on_error: document.getElementById('continueOnError').checked,
                         })
                     });
 
@@ -3299,6 +3345,7 @@ async def root():
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                            continue_on_error: document.getElementById('continueOnError').checked,
                         })
                     });
 
@@ -3503,6 +3550,7 @@ async def root():
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
+                            continue_on_error: document.getElementById('continueOnError').checked,
                         })
                     });
 
@@ -3648,6 +3696,9 @@ async def root():
                 const songDelay = localStorage.getItem('gamdl_song_delay');
                 const queueItemDelay = localStorage.getItem('gamdl_queue_item_delay');
 
+                // Queue behavior options
+                const continueOnError = localStorage.getItem('gamdl_continue_on_error');
+
                 // Apply saved values
                 if (cookiesPath) document.getElementById('cookiesPath').value = cookiesPath;
                 if (outputPath) document.getElementById('outputPath').value = outputPath;
@@ -3664,6 +3715,7 @@ async def root():
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
                 if (songDelay) document.getElementById('songDelay').value = songDelay;
                 if (queueItemDelay) document.getElementById('queueItemDelay').value = queueItemDelay;
+                if (continueOnError === 'true') document.getElementById('continueOnError').checked = true;
             }
 
             function savePreferences() {
@@ -3692,6 +3744,9 @@ async def root():
                 const songDelay = document.getElementById('songDelay').value;
                 const queueItemDelay = document.getElementById('queueItemDelay').value;
 
+                // Queue behavior options
+                const continueOnError = document.getElementById('continueOnError').checked;
+
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
@@ -3708,6 +3763,7 @@ async def root():
                 localStorage.setItem('gamdl_retry_delay', retryDelay);
                 localStorage.setItem('gamdl_song_delay', songDelay);
                 localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
+                localStorage.setItem('gamdl_continue_on_error', continueOnError);
 
                 // Also save cookies path to server-side config
                 if (cookiesPath && cookiesPath.trim() !== '') {
@@ -5224,6 +5280,12 @@ async def download_from_library(request_data: dict):
         no_cover=request_data.get("no_cover", False),
         no_lyrics=request_data.get("no_lyrics", False),
         extra_tags=request_data.get("extra_tags", False),
+        enable_retry_delay=request_data.get("enable_retry_delay", True),
+        max_retries=request_data.get("max_retries", 3),
+        retry_delay=request_data.get("retry_delay", 60),
+        song_delay=request_data.get("song_delay", 0.0),
+        queue_item_delay=request_data.get("queue_item_delay", 0.0),
+        continue_on_error=request_data.get("continue_on_error", False),
     )
 
     # Add display info for queue
@@ -5353,6 +5415,49 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             websocket_clients.remove(websocket)
 
 
+def parse_apple_music_error(exception: Exception) -> str:
+    """Extract user-friendly error message from Apple Music API exception.
+
+    Apple Music API errors come in this format:
+    Exception: ('Error getting webplayback:', '{"customerMessage":"..."}')
+
+    This function extracts the customerMessage for display to users.
+    """
+    import json
+
+    error_str = str(exception)
+
+    # Check if this looks like an Apple Music API error
+    if "Error getting" in error_str and "{" in error_str:
+        try:
+            # Extract JSON from string representation
+            start_idx = error_str.find('{')
+            end_idx = error_str.rfind('}') + 1
+
+            if start_idx > 0 and end_idx > start_idx:
+                json_str = error_str[start_idx:end_idx]
+                error_data = json.loads(json_str)
+
+                # Try to extract user-friendly message
+                # Priority: customerMessage > dialog.message > dialog.explanation
+                if "customerMessage" in error_data:
+                    return error_data["customerMessage"]
+                elif "dialog" in error_data:
+                    if "message" in error_data["dialog"]:
+                        msg = error_data["dialog"]["message"]
+                        if msg and msg.strip():
+                            return msg
+                    elif "explanation" in error_data["dialog"]:
+                        expl = error_data["dialog"]["explanation"]
+                        if expl and expl.strip():
+                            return expl
+        except (json.JSONDecodeError, KeyError, ValueError, AttributeError):
+            pass  # Fall through to return original error
+
+    # Return original error string if parsing fails
+    return error_str
+
+
 async def download_with_retry(
     downloader,
     download_item,
@@ -5364,12 +5469,34 @@ async def download_with_retry(
     """Download item with retry logic. Returns True if successful, False if all retries exhausted."""
     import asyncio
 
+    # Extract track name for retry messages
+    try:
+        track_name = download_item.media_metadata.get("attributes", {}).get("name", "Unknown track")
+    except (AttributeError, KeyError):
+        track_name = "Unknown track"
+
     attempts = 0
     while attempts <= max_retries:
         try:
+            # Log retry attempt (not first attempt)
+            if attempts > 0 and max_retries > 0:
+                await websocket.send_json({
+                    "type": "log",
+                    "message": f"Retry attempt {attempts}/{max_retries} for: {track_name}",
+                    "level": "info"
+                })
+
             # Attempt download
             await downloader.download(download_item)
-            return True  # Success
+
+            # Success! Log if this was after retries
+            if attempts > 0 and max_retries > 0:
+                await websocket.send_json({
+                    "type": "log",
+                    "message": f"Download succeeded after {attempts} retry attempt(s)",
+                    "level": "success"
+                })
+            return True
 
         except MediaFileExists as e:
             # File already exists - treat as success (skip)
@@ -5423,36 +5550,42 @@ async def download_with_retry(
 
         except Exception as e:
             attempts += 1
-            error_msg = str(e)
+
+            # Parse error message for user-friendly display
+            error_msg = parse_apple_music_error(e)
 
             # Log the full exception for debugging
-            logger.exception(f"Download attempt {attempts} failed with exception:")
+            logger.exception(f"Download attempt {attempts} failed:")
 
+            # Send message to UI
+            await websocket.send_json({
+                "type": "log",
+                "message": f"Download failed (attempt {attempts}/{max_retries + 1}): {error_msg}",
+                "level": "warning"
+            })
+
+            # Check if we should retry
             if attempts <= max_retries:
-                # Still have retries left
-                retry_num = attempts
-                await websocket.send_json({
-                    "type": "log",
-                    "message": f"Download failed (attempt {retry_num}/{max_retries + 1}): {error_msg}",
-                    "level": "warning"
-                })
-                await websocket.send_json({
-                    "type": "log",
-                    "message": f"Retrying in {retry_delay} seconds...",
-                    "level": "info"
-                })
-
-                # Wait for retry delay
-                await asyncio.sleep(retry_delay)
+                # Only sleep and retry if retries are enabled
+                if max_retries > 0:
+                    await websocket.send_json({
+                        "type": "log",
+                        "message": f"Retrying in {retry_delay} seconds...",
+                        "level": "info"
+                    })
+                    await asyncio.sleep(retry_delay)
+                else:
+                    # No retries configured, fail immediately
+                    return False
             else:
                 # All retries exhausted
+                logger.error(f"Download failed after {attempts} attempts: {type(e).__name__}: {error_msg}")
                 await websocket.send_json({
                     "type": "log",
                     "message": f"Download failed after {max_retries + 1} attempts: {error_msg}",
                     "level": "error"
                 })
-                logger.error(f"Full error details: {type(e).__name__}: {error_msg}")
-                return False  # Failure
+                return False
 
     return False
 
