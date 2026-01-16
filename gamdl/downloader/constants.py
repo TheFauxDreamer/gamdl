@@ -11,6 +11,8 @@ MUSIC_VIDEO_MEDIA_TYPE = {"music-video", "music-videos", "library-music-videos"}
 ARTIST_MEDIA_TYPE = {"artist", "artists", "library-artists"}
 UPLOADED_VIDEO_MEDIA_TYPE = {"post", "uploaded-videos"}
 PLAYLIST_MEDIA_TYPE = {"playlist", "playlists", "library-playlists"}
+PODCAST_MEDIA_TYPE = {"podcast", "podcasts"}
+PODCAST_EPISODE_MEDIA_TYPE = {"podcast-episode", "episode"}
 
 VALID_URL_PATTERN = re.compile(
     r"https://music\.apple\.com"

@@ -5,6 +5,8 @@ import httpx
 from ..utils import raise_for_status, safe_json
 from .constants import ITUNES_LOOKUP_API_URL, ITUNES_PAGE_API_URL, STOREFRONT_IDS
 
+ITUNES_SEARCH_API_URL = "https://itunes.apple.com/search"
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,3 +79,52 @@ class ItunesApi:
         logger.debug(f"iTunes page: {itunes_page}")
 
         return itunes_page
+
+    async def search_podcasts(
+        self,
+        term: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Search for podcasts by name/keyword using iTunes Search API."""
+        response = await self.client.get(
+            ITUNES_SEARCH_API_URL,
+            params={
+                "term": term,
+                "entity": "podcast",
+                "limit": limit,
+                "offset": offset,
+                "media": "podcast",
+            },
+        )
+        raise_for_status(response)
+
+        search_result = safe_json(response)
+        if "results" not in search_result:
+            raise Exception("Error searching podcasts:", response.text)
+        logger.debug(f"Podcast search result: {search_result}")
+
+        return search_result
+
+    async def get_podcast_episodes(
+        self,
+        podcast_id: int,
+        limit: int = 200,
+    ) -> dict:
+        """Get episodes for a specific podcast using iTunes Lookup API."""
+        response = await self.client.get(
+            ITUNES_LOOKUP_API_URL,
+            params={
+                "id": podcast_id,
+                "entity": "podcastEpisode",
+                "limit": limit,
+            },
+        )
+        raise_for_status(response)
+
+        lookup_result = safe_json(response)
+        if "results" not in lookup_result:
+            raise Exception("Error getting podcast episodes:", response.text)
+        logger.debug(f"Podcast episodes result: {lookup_result}")
+
+        return lookup_result

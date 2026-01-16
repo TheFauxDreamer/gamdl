@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional
 
+import httpx
+
 # Platform-specific file locking
 if sys.platform == 'win32':
     # On Windows, skip file locking for JSON config (single-user app, low risk)
@@ -37,7 +39,7 @@ else:
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -129,6 +131,9 @@ class DownloadRequest(BaseModel):
     no_cover: bool = False
     no_lyrics: bool = False
     extra_tags: bool = False
+
+    # Podcast-specific
+    podcast_name: Optional[str] = None
 
     # Retry & delay settings
     enable_retry_delay: bool = True  # Enable/disable retry and delay features
@@ -2368,6 +2373,7 @@ async def root():
                     <button class="nav-tab" onclick="switchSearchTab('artists', this)">Artists</button>
                     <button class="nav-tab" onclick="switchSearchTab('playlists', this)">Playlists</button>
                     <button class="nav-tab" onclick="switchSearchTab('music-videos', this)">Music Videos</button>
+                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)">Podcasts</button>
                 </div>
 
                 <!-- Error Display -->
@@ -2456,6 +2462,18 @@ async def root():
                             <button onclick="loadMoreSearchResults('music-videos')">Load More</button>
                         </div>
                     </div>
+
+                    <!-- Podcasts Tab -->
+                    <div id="podcastsSearchTab" class="tab-content">
+                        <div id="podcastsSearchLoading" class="loading">Loading podcasts...</div>
+                        <div id="podcastsSearchEmpty" class="library-empty" style="display:none;">
+                            <p>No podcasts found</p>
+                        </div>
+                        <div id="podcastsSearchGrid" class="library-grid"></div>
+                        <div id="podcastsSearchLoadMore" class="load-more" style="display:none;">
+                            <button onclick="loadMoreSearchResults('podcasts')">Load More</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -2505,6 +2523,23 @@ async def root():
                             </svg>
                         </div>
                         <div>No downloads in queue</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Episode Modal -->
+            <div id="episodeModal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width: 900px;">
+                    <div class="modal-header">
+                        <h3 id="episodeModalTitle">Podcast Episodes</h3>
+                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: #666;">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
+                        <div id="episodeList" style="max-height: 600px; overflow-y: auto;"></div>
+                        <div id="episodeEmpty" class="library-empty" style="display:none;">
+                            <p>No episodes found</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3230,10 +3265,25 @@ async def root():
                 } else if (type === 'music-video') {
                     const duration = item.duration ? ` • ${Math.floor(item.duration / 60)}:${(item.duration % 60).toString().padStart(2, '0')}` : '';
                     subtitle.textContent = `${item.artist}${duration}`;
+                } else if (type === 'podcast') {
+                    subtitle.textContent = `${item.author || 'Unknown'}${item.episodeCount ? ' • ' + item.episodeCount + ' episodes' : ''}`;
                 }
                 div.appendChild(subtitle);
 
-                if (type !== 'artist') {
+                if (type === 'podcast') {
+                    // Podcast-specific button
+                    const btnContainer = document.createElement('div');
+                    btnContainer.style.marginTop = '10px';
+
+                    const viewEpisodesBtn = document.createElement('button');
+                    viewEpisodesBtn.textContent = 'View Episodes';
+                    viewEpisodesBtn.className = 'btn-primary';
+                    viewEpisodesBtn.style.width = '100%';
+                    viewEpisodesBtn.onclick = () => viewPodcastEpisodes(item.id, item.name);
+                    btnContainer.appendChild(viewEpisodesBtn);
+
+                    div.appendChild(btnContainer);
+                } else if (type !== 'artist') {
                     const btnContainer = document.createElement('div');
                     btnContainer.style.marginTop = '10px';
 
@@ -3638,6 +3688,7 @@ async def root():
                             (tab === 'albums' && tabText === 'albums') ||
                             (tab === 'artists' && tabText === 'artists') ||
                             (tab === 'playlists' && tabText === 'playlists') ||
+                            (tab === 'podcasts' && tabText === 'podcasts') ||
                             (tab === 'all' && tabText === 'all')) {
                             t.classList.add('active');
                         }
@@ -3650,6 +3701,7 @@ async def root():
                 document.getElementById('artistsSearchTab').classList.toggle('active', tab === 'artists');
                 document.getElementById('playlistsSearchTab').classList.toggle('active', tab === 'playlists');
                 document.getElementById('musicVideosSearchTab').classList.toggle('active', tab === 'music-videos');
+                document.getElementById('podcastsSearchTab').classList.toggle('active', tab === 'podcasts');
 
                 currentSearchTab = tab;
 
@@ -3680,26 +3732,44 @@ async def root():
                 }
 
                 try {
-                    const response = await fetch(
-                        `/api/search?term=${encodeURIComponent(currentSearchQuery)}&types=${type}&limit=50&offset=${offset}`
-                    );
+                    let response, data, results;
 
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Search failed');
+                    // Podcasts use iTunes Search API, not Apple Music API
+                    if (type === 'podcasts') {
+                        response = await fetch(
+                            `/api/podcasts/search?term=${encodeURIComponent(currentSearchQuery)}&limit=50&offset=${offset}`
+                        );
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Podcast search failed');
+                        }
+
+                        data = await response.json();
+                        results = data.podcasts || [];
+                    } else {
+                        // Apple Music search
+                        response = await fetch(
+                            `/api/search?term=${encodeURIComponent(currentSearchQuery)}&types=${type}&limit=50&offset=${offset}`
+                        );
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Search failed');
+                        }
+
+                        data = await response.json();
+                        results = data[type] || [];
                     }
 
-                    const data = await response.json();
                     loading.style.display = 'none';
-
-                    const results = data[type] || [];
 
                     if (results.length === 0 && offset === 0) {
                         empty.style.display = 'block';
                         return;
                     }
 
-                    const singularType = type.slice(0, -1);
+                    const singularType = type === 'podcasts' ? 'podcast' : type.slice(0, -1);
                     results.forEach(item => {
                         const itemElement = createSearchResultItem(item, singularType);
                         grid.appendChild(itemElement);
@@ -3721,6 +3791,108 @@ async def root():
 
             function loadMoreSearchResults(type) {
                 loadSearchTabResults(type, true);
+            }
+
+            // Podcast episode functions
+            async function viewPodcastEpisodes(podcastId, podcastName) {
+                document.getElementById('episodeModalTitle').textContent = podcastName;
+                document.getElementById('episodeModal').style.display = 'flex';
+                document.getElementById('episodeLoading').style.display = 'block';
+                document.getElementById('episodeList').innerHTML = '';
+                document.getElementById('episodeEmpty').style.display = 'none';
+
+                // Store podcast name for downloads
+                window.currentPodcastName = podcastName;
+
+                try {
+                    const response = await fetch(`/api/podcasts/${podcastId}/episodes?limit=200`);
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to load episodes');
+                    }
+
+                    const data = await response.json();
+                    document.getElementById('episodeLoading').style.display = 'none';
+
+                    if (!data.episodes || data.episodes.length === 0) {
+                        document.getElementById('episodeEmpty').style.display = 'block';
+                        return;
+                    }
+
+                    displayPodcastEpisodes(data.episodes);
+                } catch (error) {
+                    document.getElementById('episodeLoading').style.display = 'none';
+                    alert(`Error loading episodes: ${error.message}`);
+                }
+            }
+
+            function displayPodcastEpisodes(episodes) {
+                const list = document.getElementById('episodeList');
+                list.innerHTML = '';
+
+                episodes.forEach(episode => {
+                    const episodeDiv = document.createElement('div');
+                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #eee;';
+
+                    const infoDiv = document.createElement('div');
+                    infoDiv.style.flex = '1';
+
+                    const title = document.createElement('div');
+                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px;';
+                    title.textContent = episode.title;
+                    infoDiv.appendChild(title);
+
+                    const meta = document.createElement('div');
+                    meta.style.cssText = 'font-size: 13px; color: #666;';
+                    const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
+                    const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
+                    meta.textContent = `${date}${duration}`;
+                    infoDiv.appendChild(meta);
+
+                    episodeDiv.appendChild(infoDiv);
+
+                    const downloadBtn = document.createElement('button');
+                    downloadBtn.textContent = 'Download';
+                    downloadBtn.className = 'btn-primary';
+                    downloadBtn.style.marginLeft = '15px';
+                    downloadBtn.onclick = () => downloadPodcastEpisode(episode.url, episode.title);
+                    episodeDiv.appendChild(downloadBtn);
+
+                    list.appendChild(episodeDiv);
+                });
+            }
+
+            async function downloadPodcastEpisode(episodeUrl, episodeTitle) {
+                if (!episodeUrl) {
+                    alert('Episode URL not available');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/podcasts/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            episode_url: episodeUrl,
+                            episode_title: episodeTitle,
+                            podcast_name: window.currentPodcastName || 'Unknown Podcast'
+                        })
+                    });
+
+                    if (response.ok) {
+                        alert('Episode added to download queue');
+                    } else {
+                        const error = await response.json();
+                        alert(`Download failed: ${error.detail || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            }
+
+            function closeEpisodeModal() {
+                document.getElementById('episodeModal').style.display = 'none';
             }
 
             // Load and save user preferences
@@ -4931,6 +5103,143 @@ async def search_apple_music(
         )
 
 
+@app.get("/api/podcasts/search")
+async def search_podcasts_endpoint(term: str, limit: int = 50, offset: int = 0):
+    """Search for podcasts using iTunes Search API."""
+    from gamdl.api.itunes_api import ItunesApi
+
+    try:
+        # Initialize iTunes API (doesn't require authentication)
+        if not hasattr(app.state, "itunes_api"):
+            app.state.itunes_api = ItunesApi(storefront="us", language="en-US")
+
+        itunes = app.state.itunes_api
+        results = await itunes.search_podcasts(term=term, limit=limit, offset=offset)
+
+        # Format response
+        podcasts = []
+        for item in results.get("results", []):
+            if item.get("wrapperType") == "track" and item.get("kind") == "podcast":
+                podcasts.append({
+                    "id": item["collectionId"],
+                    "name": item["collectionName"],
+                    "author": item.get("artistName", "Unknown"),
+                    "artwork": item.get("artworkUrl600", "").replace("{w}", "300").replace("{h}", "300"),
+                    "episodeCount": item.get("trackCount", 0),
+                    "feedUrl": item.get("feedUrl"),
+                    "genres": item.get("genres", [])
+                })
+
+        return {
+            "podcasts": podcasts,
+            "has_more": len(podcasts) >= limit,
+            "next_offset": offset + len(podcasts)
+        }
+
+    except Exception as e:
+        logger.error(f"Podcast search failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Podcast search failed: {str(e)}"
+        )
+
+
+@app.get("/api/podcasts/{podcast_id}/episodes")
+async def get_podcast_episodes_endpoint(podcast_id: int, limit: int = 200):
+    """Get episodes for a specific podcast."""
+    from gamdl.api.itunes_api import ItunesApi
+
+    try:
+        if not hasattr(app.state, "itunes_api"):
+            app.state.itunes_api = ItunesApi(storefront="us", language="en-US")
+
+        itunes = app.state.itunes_api
+        results = await itunes.get_podcast_episodes(podcast_id=podcast_id, limit=limit)
+
+        # Format response
+        episodes = []
+        for item in results.get("results", []):
+            if item.get("kind") == "podcast-episode":
+                episodes.append({
+                    "id": item["trackId"],
+                    "title": item["trackName"],
+                    "url": item.get("episodeUrl"),
+                    "description": item.get("description", ""),
+                    "date": item.get("releaseDate"),
+                    "duration": item.get("trackTimeMillis", 0) / 1000 if item.get("trackTimeMillis") else 0,
+                    "episodeNumber": item.get("trackNumber")
+                })
+
+        return {"episodes": episodes}
+
+    except Exception as e:
+        logger.error(f"Failed to get podcast episodes: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get podcast episodes: {str(e)}"
+        )
+
+
+@app.post("/api/podcasts/download")
+async def download_podcast_episode_endpoint(request: Request):
+    """Queue a podcast episode for download."""
+    try:
+        request_data = await request.json()
+        episode_url = request_data.get("episode_url")
+        episode_title = request_data.get("episode_title", "Podcast Episode")
+        podcast_name = request_data.get("podcast_name", "Unknown Podcast")
+
+        if not episode_url:
+            raise HTTPException(status_code=400, detail="Missing episode_url")
+
+        # Load config for output path and settings
+        config = load_webui_config()
+
+        # Parse cover_size as integer
+        cover_size = config.get('cover_size')
+        if cover_size:
+            try:
+                cover_size = int(cover_size)
+            except (ValueError, TypeError):
+                cover_size = 1200
+        else:
+            cover_size = 1200
+
+        # Create download request for the podcast episode
+        download_request = DownloadRequest(
+            urls=[episode_url],
+            cookies_path=None,  # Podcasts don't need authentication
+            output_path=config.get('output_path'),
+            temp_path=config.get('temp_path'),
+            final_path_template=config.get('final_path_template'),
+            song_codec=config.get('song_codec', 'aac'),
+            cover_size=cover_size,
+            cover_format=config.get('cover_format', 'jpg'),
+            no_cover=config.get('no_cover', False),
+            no_lyrics=config.get('no_lyrics', False),
+            extra_tags=config.get('extra_tags', False),
+            podcast_name=podcast_name,
+        )
+
+        # Add to queue with podcast-specific display info
+        display_info = {
+            "title": episode_title,
+            "type": "Podcast Episode"
+        }
+        add_to_queue(download_request, display_info)
+
+        return {"success": True, "message": "Episode added to queue"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to queue podcast download: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue podcast download: {str(e)}"
+        )
+
+
 @app.get("/api/artist/{artist_id}/catalog")
 async def get_artist_catalog(
     artist_id: str,
@@ -5745,6 +6054,125 @@ async def download_with_retry(
     return False
 
 
+def is_direct_audio_url(url: str) -> bool:
+    """Check if URL is a direct audio file (not Apple Music).
+
+    Podcast URLs are direct HTTP links to MP3/M4A files.
+    Apple Music URLs always start with https://music.apple.com
+    """
+    return not url.startswith("https://music.apple.com")
+
+
+async def download_podcast_episodes(session_id: str, session: dict, websocket: WebSocket):
+    """Download podcast episodes directly via HTTP (no authentication needed)."""
+    request: DownloadRequest = session["request"]
+
+    logger.info(f"download_podcast_episodes called with session_id={session_id}")
+    logger.info(f"Podcast URLs: {request.urls}")
+
+    async def send_log(message: str, level: str = "info"):
+        """Send a log message via WebSocket and to logger."""
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+        try:
+            await websocket.send_json({
+                "type": "log",
+                "message": message,
+                "level": level,
+            })
+        except:
+            pass
+
+    try:
+        # Setup output directory
+        output_path = request.output_path
+        if not output_path or output_path.strip() == "":
+            output_path = "./downloads"
+        else:
+            output_path = output_path.strip()
+            if output_path.startswith("~"):
+                output_path = os.path.expanduser(output_path)
+
+        base_output_dir = Path(output_path)
+
+        # Create podcast-specific subdirectory if podcast name is available
+        if request.podcast_name:
+            import re
+            # Sanitize podcast name for filesystem
+            safe_podcast_name = re.sub(r'[\\/:*?"<>|]', '_', request.podcast_name)
+            output_dir = base_output_dir / safe_podcast_name
+        else:
+            output_dir = base_output_dir
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        await send_log(f"Downloading {len(request.urls)} podcast episode(s)...")
+
+        # Download each episode
+        for url_index, url in enumerate(request.urls, 1):
+            # Check for cancellation
+            if cancellation_flags.get(session_id, False):
+                await send_log("Download cancelled by user", "warning")
+                break
+
+            await send_log(f"[Episode {url_index}/{len(request.urls)}] Downloading: {url}")
+
+            try:
+                # Simple HTTP download
+                async with httpx.AsyncClient(follow_redirects=True, timeout=300.0) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+
+                    # Extract filename from URL or Content-Disposition header
+                    filename = None
+                    if "Content-Disposition" in response.headers:
+                        import re
+                        disposition = response.headers["Content-Disposition"]
+                        match = re.findall(r'filename="?([^"]+)"?', disposition)
+                        if match:
+                            filename = match[0]
+
+                    if not filename:
+                        # Extract from URL
+                        from urllib.parse import urlparse, unquote
+                        parsed = urlparse(url)
+                        filename = unquote(Path(parsed.path).name)
+                        # Remove query parameters if they ended up in filename
+                        if '?' in filename:
+                            filename = filename.split('?')[0]
+
+                    # Ensure filename has extension
+                    if not filename.endswith(('.mp3', '.m4a', '.mp4', '.aac')):
+                        filename += '.mp3'
+
+                    # Save to podcast-specific directory
+                    filepath = output_dir / filename
+
+                    with open(filepath, 'wb') as f:
+                        f.write(response.content)
+
+                    await send_log(f"Downloaded: {filename}", "success")
+                    logger.info(f"Podcast episode saved to: {filepath}")
+
+            except Exception as e:
+                await send_log(f"Failed to download episode: {str(e)}", "error")
+                logger.error(f"Podcast download error: {e}")
+                continue
+
+        await send_log("All podcast downloads completed", "success")
+        await websocket.send_json({"type": "complete"})
+
+    except Exception as e:
+        logger.error(f"Podcast download session failed: {e}")
+        await send_log(f"Download failed: {str(e)}", "error")
+        await websocket.send_json({"type": "complete"})
+
+
 async def run_download_session(session_id: str, session: dict, websocket: WebSocket):
     """Run the actual download process with progress updates."""
     request: DownloadRequest = session["request"]
@@ -5752,6 +6180,14 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
     logger.info(f"run_download_session called with session_id={session_id}")
     logger.info(f"request.urls = {request.urls}")
     logger.info(f"len(request.urls) = {len(request.urls) if request.urls else 'None'}")
+
+    # NEW: Detect if URLs are podcasts (direct audio) or Apple Music URLs
+    if request.urls and all(is_direct_audio_url(url) for url in request.urls):
+        logger.info("Detected podcast URLs - routing to simple HTTP downloader")
+        return await download_podcast_episodes(session_id, session, websocket)
+
+    # Continue with Apple Music download flow for music.apple.com URLs
+    logger.info("Detected Apple Music URLs - routing to standard downloader")
 
     async def send_log(message: str, level: str = "info"):
         """Send a log message via WebSocket and to logger."""
