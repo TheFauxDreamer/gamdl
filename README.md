@@ -35,8 +35,8 @@ These will come in time (maybe), I don't have a timeline tho.
 
 -------------------------------------------------------------------------------------------------------------------------------
 
+## Installation
 
-```
 1. Download the code from this repository (fromt the green Code button)
 
 2. Unzip and save it somewhere like Documents
@@ -44,16 +44,19 @@ These will come in time (maybe), I don't have a timeline tho.
 3. Right click on the gamdl folder, select "Open a Terminal"
 
 4. Enter the following into the Terminal to setup the tool & download the essential dependencies:
+```
 pip install -e ".[web]"
+```
 
 5. Once complete, in the Terminal type:
+```
 gamdl-web --advanced
-or
+```or
+```
 gamdl-web
-
+```
 6. This start the tool, and automatically open a web browser with the WebUI (The --advanced option contains the above features).
 
-```
 
 See [WEB_UI_QUICKSTART.md](WEB_UI_QUICKSTART.md) for detailed instructions.
 
