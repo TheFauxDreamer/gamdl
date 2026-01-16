@@ -23,7 +23,7 @@ These work well enough that I haven't encountered major issues or bugs that brea
 
 
 ## ⚠️ WIP Features
-These are in "active" development and in varying states of useability.
+These are in "active" development and in varying states of useability. (Check the branches for these features)
 
 - Apple Podcast Support
 - Download part of an Artists Discography
