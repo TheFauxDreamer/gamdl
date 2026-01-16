@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import uuid
 import threading
 from dataclasses import asdict, dataclass
@@ -12,6 +13,30 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional
 
+# Platform-specific file locking
+if sys.platform == 'win32':
+    # On Windows, skip file locking for JSON config (single-user app, low risk)
+    def lock_file(file_obj, exclusive=False):
+        """No-op on Windows - file locking not critical for single-user config"""
+        pass
+
+    def unlock_file(file_obj):
+        """No-op on Windows"""
+        pass
+else:
+    import fcntl
+
+    def lock_file(file_obj, exclusive=False):
+        """Lock file on Unix/Linux"""
+        lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(file_obj.fileno(), lock_type)
+
+    def unlock_file(file_obj):
+        """Unlock file on Unix/Linux"""
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -203,6 +228,303 @@ async def initialize_api_from_cookies(cookies_path: str = None) -> bool:
     except Exception as e:
         logger.error(f"Failed to initialize API: {e}")
         return False
+
+
+# =============================================================================
+# Playlist Monitoring Functions
+# =============================================================================
+
+# Monitor config file location
+MONITOR_CONFIG_PATH = Path.home() / ".gamdl" / "monitor_config.json"
+
+# Global scheduler instance
+monitor_scheduler: Optional[AsyncIOScheduler] = None
+
+
+def load_monitor_config() -> dict:
+    """Load monitor config with file lock."""
+    if not MONITOR_CONFIG_PATH.exists():
+        return {
+            "enabled": False,
+            "check_interval_minutes": 60,
+            "monitored_playlist": None,
+            "tracked_track_ids": [],
+            "activity_log": []
+        }
+
+    try:
+        with open(MONITOR_CONFIG_PATH, 'r') as f:
+            lock_file(f, exclusive=False)
+            config = json.load(f)
+            unlock_file(f)
+        return config
+    except Exception as e:
+        logger.error(f"Failed to load monitor config: {e}")
+        return {
+            "enabled": False,
+            "check_interval_minutes": 60,
+            "monitored_playlist": None,
+            "tracked_track_ids": [],
+            "activity_log": []
+        }
+
+
+def save_monitor_config(config: dict):
+    """Save monitor config with atomic write."""
+    try:
+        MONITOR_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write to temp file first
+        temp_path = MONITOR_CONFIG_PATH.with_suffix('.tmp')
+        with open(temp_path, 'w') as f:
+            lock_file(f, exclusive=True)
+            json.dump(config, f, indent=2)
+            unlock_file(f)
+
+        # Atomic rename
+        temp_path.replace(MONITOR_CONFIG_PATH)
+        logger.info(f"Saved monitor config to {MONITOR_CONFIG_PATH}")
+    except Exception as e:
+        logger.error(f"Failed to save monitor config: {e}")
+
+
+def log_monitor_event(event_type: str, message: str, track_ids: list = None):
+    """Add event to activity log (keep last 100)."""
+    try:
+        config = load_monitor_config()
+
+        event = {
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "event_type": event_type,
+            "message": message
+        }
+        if track_ids:
+            event["track_ids"] = track_ids
+
+        config.setdefault('activity_log', []).insert(0, event)
+        config['activity_log'] = config['activity_log'][:100]  # Keep last 100
+
+        save_monitor_config(config)
+    except Exception as e:
+        logger.error(f"Failed to log monitor event: {e}")
+
+
+async def fetch_playlist_track_ids(playlist_info: dict) -> list[str]:
+    """Fetch current track IDs from Apple Music API."""
+    try:
+        # Initialize API if needed
+        if not hasattr(app.state, "api") or app.state.api is None:
+            success = await initialize_api_from_cookies()
+            if not success:
+                raise Exception("Failed to initialize Apple Music API")
+
+        api = app.state.api
+
+        # Fetch playlist data
+        if playlist_info['playlist_type'] == 'library':
+            # Library playlist
+            response = await api.get_library_playlist(playlist_info['playlist_id'])
+        else:
+            # Catalog playlist
+            response = await api.get_playlist(playlist_info['playlist_id'])
+
+        # Extract track IDs from playlist data
+        track_ids = []
+        tracks_data = response.get('data', [{}])[0].get('relationships', {}).get('tracks', {}).get('data', [])
+
+        for track in tracks_data:
+            track_ids.append(track['id'])
+
+        logger.info(f"Fetched {len(track_ids)} tracks from playlist {playlist_info['playlist_name']}")
+        return track_ids
+
+    except Exception as e:
+        logger.error(f"Failed to fetch playlist tracks: {e}")
+        raise
+
+
+async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
+    """Queue new tracks for download with proper song metadata."""
+    logger.info(f"Found {len(new_track_ids)} new tracks in monitored playlist '{playlist_info['playlist_name']}'")
+
+    # Check if API is initialized
+    if not hasattr(app.state, "api") or app.state.api is None:
+        logger.warning("API not initialized, queueing tracks without metadata")
+        # Fallback: queue all tracks with track IDs as titles
+        for track_id in new_track_ids:
+            await _queue_track_without_metadata(track_id, playlist_info)
+        log_monitor_event('new_tracks', f'Found {len(new_track_ids)} new tracks (no metadata)', list(new_track_ids))
+        return
+
+    api = app.state.api
+
+    # Fetch metadata and queue each track
+    for track_id in new_track_ids:
+        try:
+            # Fetch song metadata from Apple Music API
+            song_data = await api.get_song(track_id, extend="", include="")
+
+            if song_data and song_data.get("data"):
+                song_attrs = song_data["data"][0]["attributes"]
+                song_title = song_attrs.get("name", "Unknown Song")
+                artist_name = song_attrs.get("artistName", "Unknown Artist")
+                display_title = f"{song_title} - {artist_name}"
+                logger.info(f"Queueing monitored track: {display_title}")
+            else:
+                # Metadata fetch returned empty
+                display_title = f"Monitored: {track_id}"
+                logger.warning(f"Empty metadata for track {track_id}, using ID as title")
+
+        except Exception as e:
+            # Metadata fetch failed, use track ID as fallback
+            display_title = f"Monitored: {track_id}"
+            logger.warning(f"Failed to fetch metadata for track {track_id}: {e}. Using ID as title.")
+
+        # Build track URL
+        track_url = f"https://music.apple.com/us/song/{track_id}"
+
+        # Get webUI config for default settings
+        config = load_webui_config()
+
+        # Create download request with default settings
+        download_request = DownloadRequest(
+            urls=[track_url],
+            cookies_path=config.get('cookies_path'),
+            output_path=config.get('output_path'),
+            temp_path=config.get('temp_path'),
+            final_path_template=config.get('final_path_template'),
+            cover_format=config.get('cover_format'),
+            cover_size=config.get('cover_size'),
+            song_codec=config.get('song_codec'),
+            no_cover=config.get('no_cover', False),
+            no_lyrics=config.get('no_lyrics', False),
+            extra_tags=config.get('extra_tags', False),
+        )
+
+        # Add to queue with proper display info
+        try:
+            display_info = {"title": display_title, "type": "Song"}
+            add_to_queue(download_request, display_info)
+            logger.info(f"Added track {track_id} to download queue")
+        except Exception as e:
+            logger.error(f"Failed to add track {track_id} to queue: {e}")
+
+    # Log event
+    log_monitor_event('new_tracks', f'Found {len(new_track_ids)} new tracks', list(new_track_ids))
+
+
+async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
+    """Fallback function to queue track without metadata (for error cases)."""
+    track_url = f"https://music.apple.com/us/song/{track_id}"
+    config = load_webui_config()
+
+    download_request = DownloadRequest(
+        urls=[track_url],
+        cookies_path=config.get('cookies_path'),
+        output_path=config.get('output_path'),
+        temp_path=config.get('temp_path'),
+        final_path_template=config.get('final_path_template'),
+        cover_format=config.get('cover_format'),
+        cover_size=config.get('cover_size'),
+        song_codec=config.get('song_codec'),
+        no_cover=config.get('no_cover', False),
+        no_lyrics=config.get('no_lyrics', False),
+        extra_tags=config.get('extra_tags', False),
+    )
+
+    try:
+        display_info = {"title": f"Monitored: {track_id}", "type": "Song"}
+        add_to_queue(download_request, display_info)
+        logger.info(f"Added track {track_id} to download queue (without metadata)")
+    except Exception as e:
+        logger.error(f"Failed to add track {track_id} to queue: {e}")
+
+
+def log_removed_tracks(playlist_info: dict, removed_track_ids: set):
+    """Log removed tracks (no action taken)."""
+    logger.info(f"Detected {len(removed_track_ids)} tracks removed from monitored playlist '{playlist_info['playlist_name']}'")
+    log_monitor_event('removed_tracks', f'Detected {len(removed_track_ids)} removed tracks', list(removed_track_ids))
+
+
+async def check_monitored_playlist():
+    """Hourly job: Check monitored playlist for changes."""
+    try:
+        config = load_monitor_config()
+
+        # Skip if monitoring is disabled or no playlist configured
+        if not config.get('enabled') or not config.get('monitored_playlist'):
+            logger.debug("Monitoring disabled or no playlist configured, skipping check")
+            return
+
+        playlist = config['monitored_playlist']
+        logger.info(f"Checking monitored playlist '{playlist['playlist_name']}'")
+
+        # Fetch current track IDs
+        current_track_ids = await fetch_playlist_track_ids(playlist)
+        known_track_ids = set(config.get('tracked_track_ids', []))
+
+        # Detect new tracks
+        new_track_ids = set(current_track_ids) - known_track_ids
+        if new_track_ids:
+            await handle_new_tracks(playlist, new_track_ids)
+            # Update tracked IDs
+            config['tracked_track_ids'] = current_track_ids
+
+        # Detect removed tracks
+        removed_track_ids = known_track_ids - set(current_track_ids)
+        if removed_track_ids:
+            log_removed_tracks(playlist, removed_track_ids)
+            # Update tracked IDs
+            config['tracked_track_ids'] = current_track_ids
+
+        # Update last checked timestamp
+        config['monitored_playlist']['last_checked_at'] = datetime.utcnow().isoformat() + 'Z'
+        save_monitor_config(config)
+
+        logger.info(f"Completed check for playlist '{playlist['playlist_name']}' - {len(new_track_ids)} new, {len(removed_track_ids)} removed")
+
+    except Exception as e:
+        logger.error(f"Monitor check failed: {e}", exc_info=True)
+        # Log error event
+        try:
+            log_monitor_event('error', f'Monitor check failed: {str(e)}')
+        except:
+            pass
+
+
+def start_monitor_scheduler():
+    """Initialize and start the monitoring scheduler."""
+    global monitor_scheduler
+
+    try:
+        if monitor_scheduler is not None:
+            logger.info("Monitor scheduler already running")
+            return
+
+        monitor_scheduler = AsyncIOScheduler()
+        monitor_scheduler.add_job(
+            check_monitored_playlist,
+            trigger=IntervalTrigger(minutes=60),
+            id='playlist_monitor',
+            replace_existing=True
+        )
+        monitor_scheduler.start()
+        logger.info("Monitor scheduler started successfully (checking every 60 minutes)")
+    except Exception as e:
+        logger.error(f"Failed to start monitor scheduler: {e}", exc_info=True)
+
+
+def stop_monitor_scheduler():
+    """Stop the monitoring scheduler."""
+    global monitor_scheduler
+
+    try:
+        if monitor_scheduler is not None:
+            monitor_scheduler.shutdown(wait=False)
+            monitor_scheduler = None
+            logger.info("Monitor scheduler stopped")
+    except Exception as e:
+        logger.error(f"Failed to stop monitor scheduler: {e}")
 
 
 # Queue Management Functions
@@ -405,18 +727,22 @@ async def process_queue():
             # Get next queued item
             next_item = None
             with queue_lock:
+                logger.info(f"Queue processor checking queue: {len(download_queue)} total items")
                 for item in download_queue:
+                    logger.info(f"  Item {item.id}: status={item.status.value}, title={item.display_title}")
                     if item.status == QueueItemStatus.QUEUED:
                         next_item = item
                         break
 
             if not next_item:
                 # No more items to process
+                logger.info("No QUEUED items found, sleeping 2 seconds")
                 await asyncio.sleep(2)
 
                 # Check if queue is truly empty
                 with queue_lock:
                     has_queued = any(item.status == QueueItemStatus.QUEUED for item in download_queue)
+                    logger.info(f"After sleep: has_queued={has_queued}")
                     if not has_queued:
                         queue_processor_running = False
                         logger.info("Queue processor stopping (no items)")
@@ -584,6 +910,16 @@ async def startup_event():
         logger.info("API initialized successfully - library browser ready")
     else:
         logger.info("API not initialized - library browser will require cookies configuration")
+
+    # Start the playlist monitoring scheduler
+    start_monitor_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on server shutdown."""
+    logger.info("Server shutdown: stopping monitoring scheduler")
+    stop_monitor_scheduler()
 
 
 # API Routes
@@ -1365,6 +1701,254 @@ async def root():
                 font-weight: 600;
                 margin-bottom: 15px;
             }
+
+            /* Monitor View Styles */
+            .monitor-card {
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+
+            .playlist-selector-section {
+                margin-bottom: 20px;
+                padding: 20px;
+                background: #f9f9f9;
+                border-radius: 8px;
+            }
+
+            .selector-label {
+                display: block;
+                margin-bottom: 10px;
+                font-weight: 600;
+                color: #333;
+            }
+
+            .selector-controls {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .playlist-dropdown {
+                flex: 1;
+                padding: 10px 15px;
+                font-size: 14px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                background: white;
+                cursor: pointer;
+                min-width: 300px;
+            }
+
+            .playlist-dropdown:focus {
+                outline: none;
+                border-color: #007AFF;
+                box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+            }
+
+            .monitor-empty {
+                text-align: center;
+                padding: 40px 20px;
+                color: #666;
+            }
+
+            .monitor-active .monitor-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+                flex-wrap: wrap;
+                gap: 15px;
+            }
+
+            .monitor-active h3 {
+                margin: 0;
+                font-size: 20px;
+                font-weight: 600;
+            }
+
+            .monitor-controls {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+
+            .toggle-switch {
+                position: relative;
+                display: inline-block;
+                width: 50px;
+                height: 24px;
+            }
+
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+
+            .toggle-switch .slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #ccc;
+                transition: 0.3s;
+                border-radius: 24px;
+            }
+
+            .toggle-switch .slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: 0.3s;
+                border-radius: 50%;
+            }
+
+            .toggle-switch input:checked + .slider {
+                background-color: #4CAF50;
+            }
+
+            .toggle-switch input:checked + .slider:before {
+                transform: translateX(26px);
+            }
+
+            .monitor-stats {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin-top: 15px;
+            }
+
+            .monitor-stats .stat {
+                padding: 10px;
+                background: #f5f5f5;
+                border-radius: 4px;
+            }
+
+            .monitor-stats .stat-label {
+                font-weight: 600;
+                color: #666;
+                font-size: 13px;
+            }
+
+            .monitor-stats .stat-value {
+                display: block;
+                margin-top: 4px;
+                font-size: 16px;
+                color: #333;
+            }
+
+            .activity-log-section {
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 20px;
+            }
+
+            .activity-log-section h3 {
+                margin: 0 0 15px 0;
+                font-size: 18px;
+                font-weight: 600;
+            }
+
+            .activity-log {
+                max-height: 400px;
+                overflow-y: auto;
+            }
+
+            .activity-empty {
+                text-align: center;
+                color: #999;
+                padding: 20px;
+            }
+
+            .activity-item {
+                padding: 12px;
+                border-bottom: 1px solid #f0f0f0;
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+            }
+
+            .activity-item:last-child {
+                border-bottom: none;
+            }
+
+            .activity-item .activity-icon {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-right: 12px;
+                flex-shrink: 0;
+            }
+
+            .activity-item.new-tracks .activity-icon {
+                background: #e8f5e9;
+                color: #4CAF50;
+            }
+
+            .activity-item.removed-tracks .activity-icon {
+                background: #fff3e0;
+                color: #ff9800;
+            }
+
+            .activity-item.error .activity-icon {
+                background: #ffebee;
+                color: #f44336;
+            }
+
+            .activity-item .activity-content {
+                flex: 1;
+            }
+
+            .activity-item .activity-message {
+                font-weight: 500;
+                margin-bottom: 4px;
+            }
+
+            .activity-item .activity-time {
+                font-size: 12px;
+                color: #999;
+            }
+
+            .btn-danger {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+
+            .btn-danger:hover {
+                background-color: #d32f2f;
+            }
+
+            .btn-secondary {
+                background-color: #757575;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+
+            .btn-secondary:hover {
+                background-color: #616161;
+            }
         </style>
     </head>
     <body>
@@ -1377,6 +1961,7 @@ async def root():
                 <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
                 <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
                 <button class="nav-tab" onclick="switchView('search', this)">Search</button>
+                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
                 <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
             </div>
 
@@ -1601,6 +2186,76 @@ async def root():
 
                 <div class="button-group">
                     <button type="button" onclick="saveAllSettings()">Save Settings</button>
+                </div>
+            </div>
+
+            <!-- Monitor View -->
+            <div id="monitorView" class="view-section">
+                <h2>Playlist Monitor</h2>
+                <p class="subtitle">Automatically download new additions to a monitored playlist</p>
+
+                <!-- Playlist Selector -->
+                <div class="playlist-selector-section">
+                    <label for="playlistSelector" class="selector-label">Select Playlist to Monitor:</label>
+                    <div class="selector-controls">
+                        <select id="playlistSelector" class="playlist-dropdown" onchange="handlePlaylistSelection()">
+                            <option value="">-- Select a playlist --</option>
+                        </select>
+                        <button onclick="loadPlaylistsForSelector()" class="btn-secondary">Refresh Playlists</button>
+                    </div>
+                    <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: #666;">
+                        Loading playlists...
+                    </div>
+                    <div id="playlistSelectorError" class="error-message" style="display: none; margin-top: 10px;"></div>
+                </div>
+
+                <!-- Monitor Status Card -->
+                <div id="monitorStatusCard" class="monitor-card">
+                    <div class="monitor-empty" style="display: none;">
+                        <p>No playlist is being monitored</p>
+                        <p class="subtitle">Select a playlist from the dropdown above to start monitoring</p>
+                    </div>
+
+                    <div class="monitor-active" style="display: none;">
+                        <div class="monitor-header">
+                            <h3 id="monitoredPlaylistName">Playlist Name</h3>
+                            <div class="monitor-controls">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="monitorToggle" onchange="toggleMonitoring()">
+                                    <span class="slider"></span>
+                                </label>
+                                <button onclick="manualCheckPlaylist()" class="btn-secondary">Check Now</button>
+                                <button onclick="stopMonitoring()" class="btn-danger">Stop Monitoring</button>
+                            </div>
+                        </div>
+
+                        <div class="monitor-stats">
+                            <div class="stat">
+                                <span class="stat-label">Status:</span>
+                                <span id="monitorStatus" class="stat-value">Enabled</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">Tracked Tracks:</span>
+                                <span id="monitorTrackCount" class="stat-value">0</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">Last Checked:</span>
+                                <span id="monitorLastChecked" class="stat-value">Never</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">Monitoring Since:</span>
+                                <span id="monitoringSince" class="stat-value">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Log -->
+                <div class="activity-log-section">
+                    <h3>Activity Log</h3>
+                    <div id="activityLog" class="activity-log">
+                        <p class="activity-empty">No activity yet</p>
+                    </div>
                 </div>
             </div>
 
@@ -1997,10 +2652,17 @@ async def root():
                 document.getElementById('downloadsView').classList.toggle('active', view === 'downloads');
                 document.getElementById('settingsView').classList.toggle('active', view === 'settings');
                 document.getElementById('searchView').classList.toggle('active', view === 'search');
+                document.getElementById('monitorView').classList.toggle('active', view === 'monitor');
 
                 // Load library data on first view if needed
                 if (view === 'library' && !document.getElementById('albumsGrid').hasChildNodes()) {
                     loadLibraryAlbums();
+                }
+
+                // Load monitor status when switching to monitor view
+                if (view === 'monitor') {
+                    loadPlaylistsForSelector();
+                    refreshMonitorStatus();
                 }
 
                 // Focus search input when switching to search tab
@@ -2204,29 +2866,43 @@ async def root():
                     subtitle.textContent = `${item.trackCount} songs`;
                 }
 
-                // Create download button with dropdown for albums/playlists
+                // Create download button for albums/playlists
                 if (type === 'album' || type === 'playlist') {
                     const btnGroup = document.createElement('div');
                     btnGroup.className = 'btn-group';
 
-                    const mainBtn = document.createElement('button');
-                    mainBtn.textContent = 'Library Tracks';
-                    mainBtn.className = 'btn-primary';
-                    mainBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        downloadLibraryItem(item.id, type, item.name, item.artist, false);
-                    };
+                    if (type === 'album') {
+                        // Albums: show both "Library Tracks" and "Full Album" buttons
+                        const mainBtn = document.createElement('button');
+                        mainBtn.textContent = 'Library Tracks';
+                        mainBtn.className = 'btn-primary';
+                        mainBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            downloadLibraryItem(item.id, type, item.name, item.artist, false);
+                        };
 
-                    const fullBtn = document.createElement('button');
-                    fullBtn.textContent = `Full ${type === 'album' ? 'Album' : 'Playlist'}`;
-                    fullBtn.className = 'btn-secondary';
-                    fullBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        downloadLibraryItem(item.id, type, item.name, item.artist, true);
-                    };
+                        const fullBtn = document.createElement('button');
+                        fullBtn.textContent = 'Full Album';
+                        fullBtn.className = 'btn-secondary';
+                        fullBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            downloadLibraryItem(item.id, type, item.name, item.artist, true);
+                        };
 
-                    btnGroup.appendChild(mainBtn);
-                    btnGroup.appendChild(fullBtn);
+                        btnGroup.appendChild(mainBtn);
+                        btnGroup.appendChild(fullBtn);
+                    } else {
+                        // Playlists: show only single "Download" button (library tracks = full playlist)
+                        const btn = document.createElement('button');
+                        btn.textContent = 'Download';
+                        btn.className = 'btn-primary';
+                        btn.onclick = (e) => {
+                            e.stopPropagation();
+                            downloadLibraryItem(item.id, type, item.name, item.artist, false);
+                        };
+
+                        btnGroup.appendChild(btn);
+                    }
 
                     div.appendChild(img);
                     div.appendChild(title);
@@ -3313,6 +3989,328 @@ async def root():
                 loadLibraryAlbums();
                 startQueueRefresh();
             });
+
+            // =============================================================================
+            // Playlist Monitoring Functions
+            // =============================================================================
+
+            async function setMonitoredPlaylist(playlistId, playlistUrl, playlistName, playlistType) {
+                try {
+                    const response = await fetch('/api/monitor/set', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            playlist_id: playlistId,
+                            playlist_url: playlistUrl,
+                            playlist_name: playlistName,
+                            playlist_type: playlistType
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert(`Now monitoring playlist: ${playlistName}\n${result.track_count} tracks currently in playlist`);
+                        refreshMonitorStatus();
+                    } else {
+                        alert(`Failed to set monitored playlist: ${result.detail || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error('Error setting monitored playlist:', error);
+                    alert('Failed to set monitored playlist. Check console for details.');
+                }
+            }
+
+            async function loadPlaylistsForSelector() {
+                const dropdown = document.getElementById('playlistSelector');
+                const loading = document.getElementById('playlistSelectorLoading');
+                const errorDiv = document.getElementById('playlistSelectorError');
+
+                loading.style.display = 'block';
+                errorDiv.style.display = 'none';
+
+                try {
+                    // Store current selection to preserve it
+                    const currentValue = dropdown.value;
+
+                    // Clear existing options except the default
+                    dropdown.innerHTML = '<option value="">-- Select a playlist --</option>';
+
+                    let offset = 0;
+                    let hasMore = true;
+                    let allPlaylists = [];
+
+                    // Fetch all playlists (handle pagination)
+                    while (hasMore) {
+                        const response = await fetch(`/api/library/playlists?limit=50&offset=${offset}`);
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Failed to load playlists');
+                        }
+
+                        const data = await response.json();
+                        allPlaylists = allPlaylists.concat(data.data);
+
+                        if (data.has_more) {
+                            offset = data.next_offset;
+                        } else {
+                            hasMore = false;
+                        }
+                    }
+
+                    // Sort playlists alphabetically
+                    allPlaylists.sort((a, b) => a.name.localeCompare(b.name));
+
+                    // Populate dropdown
+                    allPlaylists.forEach(playlist => {
+                        const option = document.createElement('option');
+                        option.value = playlist.id;
+                        option.textContent = `${playlist.name} (${playlist.trackCount} tracks)`;
+                        option.dataset.playlistName = playlist.name;
+                        dropdown.appendChild(option);
+                    });
+
+                    // Get current monitored playlist and pre-select it
+                    const statusResponse = await fetch('/api/monitor/status');
+                    const status = await statusResponse.json();
+
+                    if (status.monitored_playlist && status.monitored_playlist.playlist_id) {
+                        dropdown.value = status.monitored_playlist.playlist_id;
+                    } else if (currentValue) {
+                        dropdown.value = currentValue;
+                    }
+
+                    loading.style.display = 'none';
+
+                } catch (error) {
+                    console.error('Error loading playlists for selector:', error);
+                    loading.style.display = 'none';
+                    errorDiv.textContent = error.message;
+                    errorDiv.style.display = 'block';
+                }
+            }
+
+            async function handlePlaylistSelection() {
+                const dropdown = document.getElementById('playlistSelector');
+                const selectedId = dropdown.value;
+
+                if (!selectedId) {
+                    return; // User selected the placeholder option
+                }
+
+                const selectedOption = dropdown.options[dropdown.selectedIndex];
+                const playlistName = selectedOption.dataset.playlistName;
+
+                // Confirm with user before starting monitoring
+                const confirmMsg = `Start monitoring playlist "${playlistName}"?\n\n` +
+                                  `All tracks in this playlist will be queued for download. ` +
+                                  `New tracks added later will be automatically downloaded.`;
+
+                if (!confirm(confirmMsg)) {
+                    // Reset dropdown to current monitored playlist or empty
+                    const statusResponse = await fetch('/api/monitor/status');
+                    const status = await statusResponse.json();
+                    if (status.monitored_playlist) {
+                        dropdown.value = status.monitored_playlist.playlist_id;
+                    } else {
+                        dropdown.value = '';
+                    }
+                    return;
+                }
+
+                // Build playlist URL (library playlist)
+                const playlistUrl = `https://music.apple.com/us/library/playlist/${selectedId}`;
+
+                // Call existing setMonitoredPlaylist function
+                await setMonitoredPlaylist(selectedId, playlistUrl, playlistName, 'library');
+            }
+
+            async function stopMonitoring() {
+                if (!confirm('Stop monitoring this playlist? Activity log will be preserved.')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/monitor/stop', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert('Monitoring stopped');
+                        refreshMonitorStatus();
+                    } else {
+                        alert(`Failed to stop monitoring: ${result.detail || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error('Error stopping monitoring:', error);
+                    alert('Failed to stop monitoring. Check console for details.');
+                }
+            }
+
+            async function refreshMonitorStatus() {
+                try {
+                    const response = await fetch('/api/monitor/status');
+                    const status = await response.json();
+
+                    const emptyDiv = document.querySelector('.monitor-empty');
+                    const activeDiv = document.querySelector('.monitor-active');
+
+                    if (status.monitored_playlist) {
+                        // Show active monitoring UI
+                        emptyDiv.style.display = 'none';
+                        activeDiv.style.display = 'block';
+
+                        // Update playlist name
+                        document.getElementById('monitoredPlaylistName').textContent = status.monitored_playlist.playlist_name;
+
+                        // Update toggle
+                        document.getElementById('monitorToggle').checked = status.enabled;
+
+                        // Update stats
+                        document.getElementById('monitorStatus').textContent = status.enabled ? 'Enabled' : 'Disabled';
+                        document.getElementById('monitorStatus').style.color = status.enabled ? '#4CAF50' : '#999';
+                        document.getElementById('monitorTrackCount').textContent = status.track_count;
+
+                        // Format last checked time
+                        if (status.monitored_playlist.last_checked_at) {
+                            const lastChecked = new Date(status.monitored_playlist.last_checked_at);
+                            document.getElementById('monitorLastChecked').textContent = formatRelativeTime(lastChecked);
+                        } else {
+                            document.getElementById('monitorLastChecked').textContent = 'Never';
+                        }
+
+                        // Format monitoring since time
+                        if (status.monitored_playlist.monitored_since) {
+                            const since = new Date(status.monitored_playlist.monitored_since);
+                            document.getElementById('monitoringSince').textContent = formatRelativeTime(since);
+                        } else {
+                            document.getElementById('monitoringSince').textContent = '-';
+                        }
+
+                        // Render activity log
+                        renderActivityLog(status.activity_log);
+                    } else {
+                        // Show empty state
+                        emptyDiv.style.display = 'block';
+                        activeDiv.style.display = 'none';
+
+                        // Render activity log (might have old events)
+                        renderActivityLog(status.activity_log);
+                    }
+                } catch (error) {
+                    console.error('Error refreshing monitor status:', error);
+                }
+            }
+
+            function renderActivityLog(events) {
+                const logContainer = document.getElementById('activityLog');
+
+                if (!events || events.length === 0) {
+                    logContainer.innerHTML = '<p class="activity-empty">No activity yet</p>';
+                    return;
+                }
+
+                let html = '';
+                events.forEach(event => {
+                    const eventClass = event.event_type.replace('_', '-');
+                    const icon = getEventIcon(event.event_type);
+                    const time = new Date(event.timestamp);
+
+                    html += `
+                        <div class="activity-item ${eventClass}">
+                            <div class="activity-icon">${icon}</div>
+                            <div class="activity-content">
+                                <div class="activity-message">${event.message}</div>
+                                <div class="activity-time">${formatRelativeTime(time)}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                logContainer.innerHTML = html;
+            }
+
+            function getEventIcon(eventType) {
+                const icons = {
+                    'new_tracks': '+',
+                    'removed_tracks': '−',
+                    'started': '▶',
+                    'stopped': '■',
+                    'toggle': '⚙',
+                    'error': '!',
+                    'check': '↻'
+                };
+                return icons[eventType] || '•';
+            }
+
+            function formatRelativeTime(date) {
+                const now = new Date();
+                const diff = Math.floor((now - date) / 1000); // seconds
+
+                if (diff < 60) return 'Just now';
+                if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
+                if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
+                if (diff < 604800) return `${Math.floor(diff / 86400)} days ago`;
+                return date.toLocaleDateString();
+            }
+
+            async function toggleMonitoring() {
+                const enabled = document.getElementById('monitorToggle').checked;
+
+                try {
+                    const response = await fetch('/api/monitor/toggle', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({enabled: enabled})
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        refreshMonitorStatus();
+                    } else {
+                        alert(`Failed to toggle monitoring: ${result.detail || 'Unknown error'}`);
+                        // Revert toggle
+                        document.getElementById('monitorToggle').checked = !enabled;
+                    }
+                } catch (error) {
+                    console.error('Error toggling monitoring:', error);
+                    alert('Failed to toggle monitoring. Check console for details.');
+                    // Revert toggle
+                    document.getElementById('monitorToggle').checked = !enabled;
+                }
+            }
+
+            async function manualCheckPlaylist() {
+                const button = event.target;
+                button.disabled = true;
+                button.textContent = 'Checking...';
+
+                try {
+                    const response = await fetch('/api/monitor/check', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert('Check completed! Refresh the monitor status to see updates.');
+                        refreshMonitorStatus();
+                    } else {
+                        alert(`Check failed: ${result.detail || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error('Error checking playlist:', error);
+                    alert('Failed to check playlist. Check console for details.');
+                } finally {
+                    button.disabled = false;
+                    button.textContent = 'Check Now';
+                }
+            }
         </script>
 
         <!-- Artist Content Modal -->
@@ -3418,6 +4416,193 @@ async def save_cookies_path_config(request_data: dict):
     save_webui_config(config)
 
     return {"success": True, "message": "Cookies path saved to configuration"}
+
+
+# =============================================================================
+# Playlist Monitoring API Endpoints
+# =============================================================================
+
+@app.post("/api/monitor/set")
+async def set_monitored_playlist_endpoint(request_data: dict):
+    """
+    Set a playlist as THE monitored playlist.
+
+    Expected request body:
+    {
+        "playlist_id": "p.abc123",
+        "playlist_url": "https://...",
+        "playlist_name": "My Playlist",
+        "playlist_type": "library"
+    }
+    """
+    try:
+        playlist_id = request_data.get("playlist_id")
+        playlist_url = request_data.get("playlist_url")
+        playlist_name = request_data.get("playlist_name")
+        playlist_type = request_data.get("playlist_type")
+
+        if not all([playlist_id, playlist_url, playlist_name, playlist_type]):
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        # Build playlist info dict
+        playlist_info = {
+            "playlist_id": playlist_id,
+            "playlist_url": playlist_url,
+            "playlist_name": playlist_name,
+            "playlist_type": playlist_type
+        }
+
+        # Fetch current track IDs and queue them all for download
+        logger.info(f"Setting monitored playlist: {playlist_name}")
+        try:
+            current_track_ids = await fetch_playlist_track_ids(playlist_info)
+        except Exception as e:
+            logger.error(f"Failed to fetch playlist tracks: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch playlist: {str(e)}")
+
+        # Create new config
+        config = {
+            "enabled": True,
+            "check_interval_minutes": 60,
+            "monitored_playlist": {
+                "playlist_id": playlist_id,
+                "playlist_url": playlist_url,
+                "playlist_name": playlist_name,
+                "playlist_type": playlist_type,
+                "last_checked_at": datetime.utcnow().isoformat() + 'Z',
+                "monitored_since": datetime.utcnow().isoformat() + 'Z'
+            },
+            "tracked_track_ids": current_track_ids,
+            "activity_log": []
+        }
+
+        # Save config
+        save_monitor_config(config)
+
+        # Queue all current tracks for download
+        if current_track_ids:
+            logger.info(f"Queueing {len(current_track_ids)} existing tracks for download")
+            await handle_new_tracks(playlist_info, set(current_track_ids))
+
+        # Log event
+        log_monitor_event('started', f"Started monitoring playlist '{playlist_name}' - queued {len(current_track_ids)} tracks for download")
+
+        logger.info(f"Successfully set monitored playlist: {playlist_name} ({len(current_track_ids)} tracks queued)")
+
+        return {
+            "success": True,
+            "message": f"Now monitoring playlist '{playlist_name}'",
+            "track_count": len(current_track_ids)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set monitored playlist: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/monitor/stop")
+async def stop_monitoring_endpoint():
+    """Stop monitoring (clear all data)."""
+    try:
+        config = load_monitor_config()
+
+        playlist_name = "Unknown"
+        if config.get("monitored_playlist"):
+            playlist_name = config["monitored_playlist"].get("playlist_name", "Unknown")
+
+        # Reset config
+        config = {
+            "enabled": False,
+            "check_interval_minutes": 60,
+            "monitored_playlist": None,
+            "tracked_track_ids": [],
+            "activity_log": config.get("activity_log", [])  # Keep log
+        }
+
+        save_monitor_config(config)
+
+        # Log event
+        log_monitor_event('stopped', f"Stopped monitoring playlist '{playlist_name}'")
+
+        logger.info(f"Stopped monitoring playlist: {playlist_name}")
+
+        return {"success": True, "message": "Monitoring stopped"}
+
+    except Exception as e:
+        logger.error(f"Failed to stop monitoring: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/monitor/status")
+async def get_monitor_status_endpoint():
+    """Get current monitor status and activity log."""
+    try:
+        config = load_monitor_config()
+
+        return {
+            "enabled": config.get("enabled", False),
+            "monitored_playlist": config.get("monitored_playlist"),
+            "track_count": len(config.get("tracked_track_ids", [])),
+            "activity_log": config.get("activity_log", [])[:20]  # Return last 20 events
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get monitor status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/monitor/check")
+async def manual_check_endpoint():
+    """Manually trigger check for monitored playlist."""
+    try:
+        config = load_monitor_config()
+
+        if not config.get("enabled") or not config.get("monitored_playlist"):
+            raise HTTPException(status_code=400, detail="No playlist is being monitored")
+
+        # Run check
+        await check_monitored_playlist()
+
+        return {"success": True, "message": "Check completed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual check failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/monitor/toggle")
+async def toggle_monitoring_endpoint(request_data: dict):
+    """Enable/disable monitoring without clearing data."""
+    try:
+        enabled = request_data.get("enabled")
+
+        if enabled is None:
+            raise HTTPException(status_code=400, detail="Missing 'enabled' field")
+
+        config = load_monitor_config()
+
+        if not config.get("monitored_playlist"):
+            raise HTTPException(status_code=400, detail="No playlist configured to monitor")
+
+        config["enabled"] = bool(enabled)
+        save_monitor_config(config)
+
+        status_text = "enabled" if enabled else "disabled"
+        log_monitor_event('toggle', f"Monitoring {status_text}")
+
+        logger.info(f"Monitoring {status_text}")
+
+        return {"success": True, "message": f"Monitoring {status_text}", "enabled": enabled}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle monitoring: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/search")
@@ -4021,6 +5206,9 @@ async def download_from_library(request_data: dict):
         # Library URLs format: https://music.apple.com/{storefront}/library/{type}/{id}
         url = f"https://music.apple.com/{storefront}/library/{media_type}s/{library_id}"
 
+    logger.info(f"Generated URL for download: {url}")
+    logger.info(f"DownloadRequest will have urls=['{url}']")
+
     # Create a download request
     download_request = DownloadRequest(
         urls=[url],
@@ -4045,7 +5233,15 @@ async def download_from_library(request_data: dict):
     }
 
     # Add to queue
+    logger.info(f"About to call add_to_queue with display_info={display_info}")
     item_id = add_to_queue(download_request, display_info)
+    logger.info(f"add_to_queue returned item_id={item_id}")
+
+    # Debug: Check queue state immediately after adding
+    with queue_lock:
+        queue_count = len(download_queue)
+        queued_count = sum(1 for item in download_queue if item.status == QueueItemStatus.QUEUED)
+        logger.info(f"Queue state after add: total={queue_count}, queued={queued_count}")
 
     return SessionResponse(
         session_id=item_id,
@@ -4265,6 +5461,10 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
     """Run the actual download process with progress updates."""
     request: DownloadRequest = session["request"]
 
+    logger.info(f"run_download_session called with session_id={session_id}")
+    logger.info(f"request.urls = {request.urls}")
+    logger.info(f"len(request.urls) = {len(request.urls) if request.urls else 'None'}")
+
     async def send_log(message: str, level: str = "info"):
         """Send a log message via WebSocket."""
         try:
@@ -4411,33 +5611,47 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             uploaded_video_downloader=uploaded_video_downloader,
         )
 
+        logger.info("Downloader initialized successfully")
+        logger.info(f"About to process {len(request.urls)} URL(s)")
+        logger.info(f"request.urls type: {type(request.urls)}")
+        logger.info(f"request.urls value: {request.urls}")
         await send_log(f"Processing {len(request.urls)} URL(s)...")
 
         # Process each URL
+        logger.info(f"Entering URL processing loop with {len(request.urls)} URLs")
         for url_index, url in enumerate(request.urls, 1):
+            logger.info(f"Loop iteration {url_index}: processing URL: {url}")
             # Check for cancellation
             if cancellation_flags.get(session_id, False):
                 await send_log("Download cancelled by user", "warning")
                 break
 
             await send_log(f"[URL {url_index}/{len(request.urls)}] Processing: {url}")
+            logger.info(f"After send_log, about to get URL info for: {url}")
 
             try:
                 # Get URL info
+                logger.info("Calling downloader.get_url_info()")
                 url_info = downloader.get_url_info(url)
+                logger.info(f"get_url_info returned: {url_info}")
                 if not url_info:
                     await send_log(f"Could not parse URL: {url}", "warning")
+                    logger.warning(f"URL info is None/empty, continuing to next URL")
                     continue
 
                 # Get download queue
                 await send_log(f"Fetching metadata for {url}...")
+                logger.info("Calling downloader.get_download_queue()")
                 download_queue = await downloader.get_download_queue(url_info)
+                logger.info(f"get_download_queue returned {len(download_queue) if download_queue else 0} items")
 
                 if not download_queue:
                     await send_log("No downloadable media found", "warning")
+                    logger.warning("download_queue is empty, continuing to next URL")
                     continue
 
                 await send_log(f"Found {len(download_queue)} track(s) to download", "success")
+                logger.info(f"About to download {len(download_queue)} tracks")
 
                 # Update queue item total progress
                 if current_downloading_item:
@@ -4548,7 +5762,7 @@ def main(host: str = "127.0.0.1", port: int = 8080):
     # Open browser after a short delay to ensure server is ready
     def open_browser():
         import time
-        time.sleep(1.5)
+        time.sleep(3.0)
         webbrowser.open(url)
 
     browser_thread = threading.Thread(target=open_browser, daemon=True)

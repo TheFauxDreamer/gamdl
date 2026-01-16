@@ -227,6 +227,35 @@ class AppleMusicApi:
 
         return song
 
+    async def get_library_song(
+        self,
+        song_id: str,
+        extend: str = "extendedAssetUrls",
+        include: str = "lyrics,albums",
+    ) -> dict | None:
+        """Get a single library song by ID."""
+        if not self.active_subscription:
+            return None
+
+        response = await self.client.get(
+            f"{AMP_API_URL}/v1/me/library/songs/{song_id}",
+            params={
+                "extend": extend,
+                "include": include,
+            },
+        )
+        raise_for_status(response, {200, 404})
+
+        if response.status_code == 404:
+            return None
+
+        song = safe_json(response)
+        if not "data" in song:
+            raise Exception("Error getting library song:", response.text)
+        logger.debug(f"Library song: {song}")
+
+        return song
+
     async def get_music_video(
         self,
         music_video_id: str,

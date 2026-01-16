@@ -327,7 +327,10 @@ class AppleMusicDownloader:
             )
 
         if url_type in SONG_MEDIA_TYPE:
-            song_respose = await self.interface.apple_music_api.get_song(id)
+            if is_library:
+                song_respose = await self.interface.apple_music_api.get_library_song(id)
+            else:
+                song_respose = await self.interface.apple_music_api.get_song(id)
 
             if song_respose is None:
                 return None
