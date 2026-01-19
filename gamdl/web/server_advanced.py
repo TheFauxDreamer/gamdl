@@ -2211,6 +2211,7 @@ async def root():
                     <label>
                         <input type="checkbox" id="noCover" name="noCover">
                         <span>Skip cover art download</span>
+                        <small>Doesn't download a seperate JPG of the cover art. Songs still contain the artwork</small>
                     </label>
                 </div>
 
@@ -2219,6 +2220,7 @@ async def root():
                     <label>
                         <input type="checkbox" id="noLyrics" name="noLyrics">
                         <span>Skip lyrics download</span>
+                        <small>When enabled, when downloading songs, the accompanying .lrc lyric file is saved alongside the song</small>
                     </label>
                 </div>
 
