@@ -4868,15 +4868,19 @@ async def remove_queue_item(item_id: str):
 
 @app.post("/api/queue/clear")
 async def clear_queue_endpoint():
-    """Clear all completed/failed items from queue."""
+    """Clear all completed/failed items from queue and resume if paused."""
     with queue_lock:
         global download_queue
         download_queue = [
             item for item in download_queue
             if item.status in [QueueItemStatus.QUEUED, QueueItemStatus.DOWNLOADING]
         ]
+
+    # Resume queue if it's paused
+    resume_queue()
+
     await broadcast_queue_update()
-    return {"status": "cleared", "message": "Completed items cleared"}
+    return {"status": "cleared", "message": "Completed items cleared and queue resumed"}
 
 
 @app.post("/api/config/cookies-path")
