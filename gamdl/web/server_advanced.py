@@ -5165,7 +5165,7 @@ async def search_apple_music(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5431,7 +5431,7 @@ async def get_artist_catalog(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5616,7 +5616,7 @@ async def get_library_albums(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5676,7 +5676,7 @@ async def get_library_playlists(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5736,7 +5736,7 @@ async def get_library_songs(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5803,7 +5803,7 @@ async def download_from_library(request_data: dict):
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
