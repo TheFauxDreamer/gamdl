@@ -117,6 +117,7 @@ class DownloadRequest(BaseModel):
     urls: list[str]
     cookies_path: Optional[str] = None
     output_path: Optional[str] = None
+    podcast_output_path: Optional[str] = None
     temp_path: Optional[str] = None
 
     # Common options
@@ -136,6 +137,7 @@ class DownloadRequest(BaseModel):
     podcast_name: Optional[str] = None
     episode_title: Optional[str] = None
     episode_date: Optional[str] = None
+    episode_metadata: Optional[list[dict]] = None  # For bulk downloads: list of {title, date} per URL
 
     # Retry & delay settings
     enable_retry_delay: bool = True  # Enable/disable retry and delay features
@@ -2160,7 +2162,13 @@ async def root():
                 <div class="form-group">
                     <label for="outputPath">Output Path</label>
                     <input type="text" id="outputPath" name="outputPath" placeholder="./downloads">
-                    <small>Directory where downloaded files will be saved</small>
+                    <small>Directory where downloaded music files will be saved</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="podcastOutputPath">Podcast Output Path</label>
+                    <input type="text" id="podcastOutputPath" name="podcastOutputPath" placeholder="./podcasts">
+                    <small>Directory where downloaded podcast files will be saved (leave empty to use Output Path)</small>
                 </div>
 
                 <h3>Audio Options</h3>
@@ -2549,6 +2557,10 @@ async def root():
                             <p>No episodes found</p>
                         </div>
                     </div>
+                    <div class="modal-footer">
+                        <button onclick="downloadAllPodcastEpisodes()" class="btn-primary">Download All Episodes</button>
+                        <button onclick="closeEpisodeModal()" class="btn-secondary">Close</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2713,6 +2725,7 @@ async def root():
                     urls: urls,
                     cookies_path: document.getElementById('cookiesPath').value || null,
                     output_path: document.getElementById('outputPath').value || null,
+                    podcast_output_path: document.getElementById('podcastOutputPath').value || null,
                     song_codec: document.getElementById('songCodec').value || null,
                     cover_size: document.getElementById('coverSize').value ? parseInt(document.getElementById('coverSize').value) : null,
                     music_video_resolution: document.getElementById('musicVideoResolution').value || null,
@@ -3825,8 +3838,9 @@ async def root():
                 document.getElementById('episodeList').innerHTML = '';
                 document.getElementById('episodeEmpty').style.display = 'none';
 
-                // Store podcast name for downloads
+                // Store podcast name and episodes for downloads
                 window.currentPodcastName = podcastName;
+                window.currentPodcastEpisodes = [];
 
                 try {
                     const response = await fetch(`/api/podcasts/${podcastId}/episodes?limit=200`);
@@ -3844,6 +3858,8 @@ async def root():
                         return;
                     }
 
+                    // Store episodes globally for download all functionality
+                    window.currentPodcastEpisodes = data.episodes;
                     displayPodcastEpisodes(data.episodes);
                 } catch (error) {
                     document.getElementById('episodeLoading').style.display = 'none';
@@ -3914,6 +3930,69 @@ async def root():
                 }
             }
 
+            async function downloadAllPodcastEpisodes() {
+                if (!window.currentPodcastEpisodes || window.currentPodcastEpisodes.length === 0) {
+                    alert('No episodes available to download');
+                    return;
+                }
+
+                const episodeCount = window.currentPodcastEpisodes.length;
+                const podcastName = window.currentPodcastName || 'Unknown Podcast';
+
+                // Confirm with user
+                const confirmed = confirm(
+                    `Download all ${episodeCount} episodes of "${podcastName}"?\n\n` +
+                    `This will add ${episodeCount} episodes to the download queue.`
+                );
+
+                if (!confirmed) {
+                    return;
+                }
+
+                try {
+                    // Filter episodes with valid URLs and collect both URLs and metadata
+                    const validEpisodes = window.currentPodcastEpisodes.filter(ep => ep.url);
+
+                    if (validEpisodes.length === 0) {
+                        alert('No valid episode URLs found');
+                        return;
+                    }
+
+                    const episodeUrls = validEpisodes.map(ep => ep.url);
+                    const episodeMetadata = validEpisodes.map(ep => ({
+                        title: ep.title || 'Unknown Episode',
+                        date: ep.date || null
+                    }));
+
+                    // Submit download request with all episode URLs and metadata
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            urls: episodeUrls,
+                            cookies_path: document.getElementById('cookiesPath').value || null,
+                            output_path: document.getElementById('outputPath').value || null,
+                            podcast_output_path: document.getElementById('podcastOutputPath').value || null,
+                            podcast_name: podcastName,
+                            episode_metadata: episodeMetadata,
+                            display_title: `${podcastName} - All Episodes`,
+                            display_type: 'Podcast',
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        alert(`Download failed: ${error.detail || 'Unknown error'}`);
+                        return;
+                    }
+
+                    alert(`Successfully added ${episodeUrls.length} episodes to download queue!`);
+                    closeEpisodeModal();
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            }
+
             function closeEpisodeModal() {
                 document.getElementById('episodeModal').style.display = 'none';
             }
@@ -3923,6 +4002,7 @@ async def root():
                 // Paths
                 const cookiesPath = localStorage.getItem('gamdl_cookies_path');
                 const outputPath = localStorage.getItem('gamdl_output_path');
+                const podcastOutputPath = localStorage.getItem('gamdl_podcast_output_path');
 
                 // Audio options
                 const songCodec = localStorage.getItem('gamdl_song_codec');
@@ -3951,6 +4031,7 @@ async def root():
                 // Apply saved values
                 if (cookiesPath) document.getElementById('cookiesPath').value = cookiesPath;
                 if (outputPath) document.getElementById('outputPath').value = outputPath;
+                if (podcastOutputPath) document.getElementById('podcastOutputPath').value = podcastOutputPath;
                 if (songCodec) document.getElementById('songCodec').value = songCodec;
                 if (musicVideoResolution) document.getElementById('musicVideoResolution').value = musicVideoResolution;
                 if (coverSize) document.getElementById('coverSize').value = coverSize;
@@ -3971,6 +4052,7 @@ async def root():
                 // Paths
                 const cookiesPath = document.getElementById('cookiesPath').value;
                 const outputPath = document.getElementById('outputPath').value;
+                const podcastOutputPath = document.getElementById('podcastOutputPath').value;
 
                 // Audio options
                 const songCodec = document.getElementById('songCodec').value;
@@ -3999,6 +4081,7 @@ async def root():
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
+                localStorage.setItem('gamdl_podcast_output_path', podcastOutputPath);
                 localStorage.setItem('gamdl_song_codec', songCodec);
                 localStorage.setItem('gamdl_music_video_resolution', musicVideoResolution);
                 localStorage.setItem('gamdl_cover_size', coverSize);
@@ -4022,6 +4105,7 @@ async def root():
                         // Paths
                         cookies_path: cookiesPath,
                         output_path: outputPath,
+                        podcast_output_path: podcastOutputPath,
 
                         // Audio options
                         song_codec: songCodec,
@@ -4293,6 +4377,7 @@ async def root():
             // Add event listeners to save preferences when fields change
             document.getElementById('cookiesPath').addEventListener('change', savePreferences);
             document.getElementById('outputPath').addEventListener('change', savePreferences);
+            document.getElementById('podcastOutputPath').addEventListener('change', savePreferences);
             document.getElementById('songCodec').addEventListener('change', savePreferences);
             document.getElementById('musicVideoResolution').addEventListener('change', savePreferences);
             document.getElementById('coverSize').addEventListener('change', savePreferences);
@@ -4764,6 +4849,8 @@ async def save_all_settings_config(request_data: dict):
         config["cookies_path"] = clean_value(request_data["cookies_path"])
     if "output_path" in request_data:
         config["output_path"] = clean_value(request_data["output_path"])
+    if "podcast_output_path" in request_data:
+        config["podcast_output_path"] = clean_value(request_data["podcast_output_path"])
     if "temp_path" in request_data:
         config["temp_path"] = clean_value(request_data["temp_path"])
     if "final_path_template" in request_data:
@@ -5234,6 +5321,7 @@ async def download_podcast_episode_endpoint(request: Request):
             urls=[episode_url],
             cookies_path=None,  # Podcasts don't need authentication
             output_path=config.get('output_path'),
+            podcast_output_path=config.get('podcast_output_path'),
             temp_path=config.get('temp_path'),
             final_path_template=config.get('final_path_template'),
             song_codec=config.get('song_codec', 'aac'),
@@ -6123,14 +6211,16 @@ async def download_podcast_episodes(session_id: str, session: dict, websocket: W
             pass
 
     try:
-        # Setup output directory
-        output_path = request.output_path
-        if not output_path or output_path.strip() == "":
-            output_path = "./downloads"
+        # Setup output directory - use podcast-specific path if provided, otherwise fall back to music output path
+        if request.podcast_output_path and request.podcast_output_path.strip():
+            output_path = request.podcast_output_path.strip()
+        elif request.output_path and request.output_path.strip():
+            output_path = request.output_path.strip()
         else:
-            output_path = output_path.strip()
-            if output_path.startswith("~"):
-                output_path = os.path.expanduser(output_path)
+            output_path = "./downloads"
+
+        if output_path.startswith("~"):
+            output_path = os.path.expanduser(output_path)
 
         base_output_dir = Path(output_path)
 
@@ -6190,12 +6280,26 @@ async def download_podcast_episodes(session_id: str, session: dict, websocket: W
                     if not file_extension or not file_extension.lower().endswith(('.mp3', '.m4a', '.mp4', '.aac')):
                         file_extension = '.mp3'
 
+                    # Get episode metadata for this URL (for bulk downloads)
+                    episode_title = None
+                    episode_date = None
+
+                    if request.episode_metadata and len(request.episode_metadata) >= url_index:
+                        # Bulk download: get metadata for current episode (url_index is 1-based)
+                        metadata = request.episode_metadata[url_index - 1]
+                        episode_title = metadata.get('title')
+                        episode_date = metadata.get('date')
+                    else:
+                        # Single episode download: use request fields
+                        episode_title = request.episode_title
+                        episode_date = request.episode_date
+
                     # Build filename with date prefix and episode title
-                    if request.episode_date and request.episode_title:
+                    if episode_date and episode_title:
                         # Parse date and format as YYYY-MM-DD
                         from datetime import datetime
                         try:
-                            date_obj = datetime.fromisoformat(request.episode_date.replace('Z', '+00:00'))
+                            date_obj = datetime.fromisoformat(episode_date.replace('Z', '+00:00'))
                             date_prefix = date_obj.strftime('%Y-%m-%d')
                         except (ValueError, AttributeError):
                             date_prefix = None
@@ -6203,17 +6307,17 @@ async def download_podcast_episodes(session_id: str, session: dict, websocket: W
                         if date_prefix:
                             # Sanitize episode title for filename
                             import re
-                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', request.episode_title)
+                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
                             filename = f"{date_prefix} - {safe_title}{file_extension}"
                         else:
                             # No valid date, use title only
                             import re
-                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', request.episode_title)
+                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
                             filename = f"{safe_title}{file_extension}"
-                    elif request.episode_title:
+                    elif episode_title:
                         # No date, use title only
                         import re
-                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', request.episode_title)
+                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
                         filename = f"{safe_title}{file_extension}"
                     else:
                         # Fallback to URL-based filename
