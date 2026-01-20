@@ -127,6 +127,18 @@ class AppleMusicDownloader:
         self,
         collection_metadata: dict,
     ) -> list[DownloadItem]:
+        # Clear existing playlist files before starting fresh download (prevents stale entries)
+        if collection_metadata["type"] in PLAYLIST_MEDIA_TYPE and self.base_downloader.save_playlist:
+            # Get playlist file path to clear
+            playlist_tags = self.base_downloader.get_playlist_tags(
+                collection_metadata,
+                collection_metadata["relationships"]["tracks"]["data"][0] if collection_metadata["relationships"]["tracks"]["data"] else None
+            )
+            if playlist_tags:
+                playlist_file_path = self.base_downloader.get_playlist_file_path(playlist_tags)
+                logger.info(f"Clearing existing playlist files: {playlist_file_path}")
+                self.base_downloader.clear_playlist_files(playlist_file_path)
+
         tracks_metadata = collection_metadata["relationships"]["tracks"]["data"]
         page_count = 1
         logger.info(f"Fetching playlist tracks (page {page_count}, {len(tracks_metadata)} tracks so far)...")
@@ -531,7 +543,14 @@ class AppleMusicDownloader:
             )
 
         if download_item.playlist_tags and self.base_downloader.save_playlist:
+            # Generate M3U8 format
             self.base_downloader.update_playlist_file(
+                download_item.playlist_file_path,
+                download_item.final_path,
+                download_item.playlist_tags.playlist_track,
+            )
+            # Generate M3U format
+            self.base_downloader.update_playlist_file_m3u(
                 download_item.playlist_file_path,
                 download_item.final_path,
                 download_item.playlist_tags.playlist_track,

@@ -41,7 +41,7 @@ class AppleMusicBaseDownloader:
         single_disc_file_template: str = "{track:02d} {title}",
         multi_disc_file_template: str = "{disc}-{track:02d} {title}",
         no_album_file_template: str = "{title}",
-        playlist_file_template: str = "Playlists/{playlist_artist}/{playlist_title}",
+        playlist_file_template: str = "Playlists/{playlist_title}",
         date_tag_template: str = "%Y-%m-%dT%H:%M:%SZ",
         exclude_tags: list[str] = None,
         cover_size: int = 1200,
@@ -389,6 +389,67 @@ class AppleMusicBaseDownloader:
         playlist_file_lines[playlist_track - 1] = final_path_relative.as_posix() + "\n"
         with playlist_file_path_obj.open("w", encoding="utf8") as playlist_file:
             playlist_file.writelines(playlist_file_lines)
+
+    def update_playlist_file_m3u(
+        self,
+        playlist_file_path: str,
+        final_path: str,
+        playlist_track: int,
+    ) -> None:
+        """Update M3U playlist file (standard format without extended metadata).
+
+        Similar to update_playlist_file() but generates .m3u instead of .m3u8.
+
+        Args:
+            playlist_file_path: Path to the playlist file (will change extension to .m3u)
+            final_path: Path to the downloaded track
+            playlist_track: Track position in playlist (1-indexed)
+        """
+        # Convert .m3u8 path to .m3u
+        playlist_file_path_obj = Path(playlist_file_path).with_suffix('.m3u')
+        final_path_obj = Path(final_path)
+        output_dir_obj = Path(self.output_path)
+
+        playlist_file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        playlist_file_path_parent_parts_len = len(playlist_file_path_obj.parent.parts)
+        output_path_parts_len = len(output_dir_obj.parts)
+
+        final_path_relative = Path(
+            ("../" * (playlist_file_path_parent_parts_len - output_path_parts_len)),
+            *final_path_obj.parts[output_path_parts_len:],
+        )
+        playlist_file_lines = (
+            playlist_file_path_obj.open("r", encoding="utf8").readlines()
+            if playlist_file_path_obj.exists()
+            else []
+        )
+        if len(playlist_file_lines) < playlist_track:
+            playlist_file_lines.extend(
+                "\n" for _ in range(playlist_track - len(playlist_file_lines))
+            )
+
+        playlist_file_lines[playlist_track - 1] = final_path_relative.as_posix() + "\n"
+        with playlist_file_path_obj.open("w", encoding="utf8") as playlist_file:
+            playlist_file.writelines(playlist_file_lines)
+
+    def clear_playlist_files(self, playlist_file_path: str) -> None:
+        """Clear/delete existing playlist files before starting a fresh download.
+
+        This prevents stale entries from remaining when a playlist shrinks or tracks are removed.
+
+        Args:
+            playlist_file_path: Path to the playlist file (will clear both .m3u8 and .m3u)
+        """
+        playlist_file_path_obj = Path(playlist_file_path)
+
+        # Delete M3U8 file if it exists
+        if playlist_file_path_obj.exists():
+            playlist_file_path_obj.unlink()
+
+        # Delete M3U file if it exists
+        m3u_path = playlist_file_path_obj.with_suffix('.m3u')
+        if m3u_path.exists():
+            m3u_path.unlink()
 
     def cleanup_temp(self, random_uuid: str) -> None:
         temp_folder = Path(self.temp_path) / TEMP_PATH_TEMPLATE.format(random_uuid)

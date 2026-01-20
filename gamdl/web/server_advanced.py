@@ -132,6 +132,7 @@ class DownloadRequest(BaseModel):
     no_cover: bool = False
     no_lyrics: bool = False
     extra_tags: bool = False
+    save_playlist: bool = False  # Enable playlist file generation (M3U/M3U8)
 
     # Podcast-specific
     podcast_name: Optional[str] = None
@@ -359,9 +360,53 @@ async def fetch_playlist_track_ids(playlist_info: dict) -> list[str]:
         raise
 
 
+async def _clear_monitored_playlist_files(playlist_info: dict, config: dict):
+    """Clear existing playlist files for a monitored playlist to prevent stale entries."""
+    from gamdl.downloader.downloader_base import AppleMusicBaseDownloader
+    from gamdl.interface.types import PlaylistTags
+
+    # Create a minimal base downloader instance just to calculate playlist file path
+    output_path = config.get('output_path', './Apple Music')
+
+    # Helper to convert empty strings to None
+    def clean_config_value(key, default=None):
+        value = config.get(key, default)
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    temp_downloader = AppleMusicBaseDownloader(
+        output_path=output_path,
+        playlist_file_template=clean_config_value('playlist_file_template', 'Playlists/{playlist_title}'),
+    )
+
+    # Build playlist tags from playlist_info
+    playlist_tags = PlaylistTags(
+        playlist_artist=playlist_info.get('curator_name', 'Unknown'),
+        playlist_id=playlist_info['playlist_id'],
+        playlist_title=playlist_info['playlist_name'],
+        playlist_track=1,  # Doesn't matter for path calculation
+    )
+
+    # Get playlist file path
+    playlist_file_path = temp_downloader.get_playlist_file_path(playlist_tags)
+
+    # Clear both M3U8 and M3U files
+    logger.info(f"Clearing monitored playlist files: {playlist_file_path}")
+    temp_downloader.clear_playlist_files(playlist_file_path)
+
+
 async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
     """Queue new tracks for download with proper song metadata."""
     logger.info(f"Found {len(new_track_ids)} new tracks in monitored playlist '{playlist_info['playlist_name']}'")
+
+    # Clear playlist files before adding new tracks (prevents stale entries)
+    config = load_webui_config()
+    if config.get('save_playlist', False):
+        try:
+            await _clear_monitored_playlist_files(playlist_info, config)
+        except Exception as e:
+            logger.warning(f"Failed to clear playlist files: {e}")
 
     # Check if API is initialized
     if not hasattr(app.state, "api") or app.state.api is None:
@@ -436,6 +481,7 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
             no_cover=config.get('no_cover', False),
             no_lyrics=config.get('no_lyrics', False),
             extra_tags=config.get('extra_tags', False),
+            save_playlist=config.get('save_playlist', False),
             enable_retry_delay=config.get('enable_retry_delay', True),
             max_retries=config.get('max_retries', 3),
             retry_delay=config.get('retry_delay', 60),
@@ -494,6 +540,7 @@ async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
         no_cover=config.get('no_cover', False),
         no_lyrics=config.get('no_lyrics', False),
         extra_tags=config.get('extra_tags', False),
+        save_playlist=config.get('save_playlist', False),
         enable_retry_delay=config.get('enable_retry_delay', True),
         max_retries=config.get('max_retries', 3),
         retry_delay=config.get('retry_delay', 60),
@@ -2251,6 +2298,14 @@ async def root():
                     <small>When downloading an artist's discography, also include their music videos</small>
                 </div>
 
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="savePlaylist" name="savePlaylist">
+                        <span>Save playlist files (M3U/M3U8) when downloading playlists</span>
+                    </label>
+                    <small>Creates playlist files with relative paths to downloaded tracks</small>
+                </div>
+
                 <h3>Retry & Delay Options</h3>
                 <div class="form-group checkbox-group">
                     <label>
@@ -2733,6 +2788,7 @@ async def root():
                     no_cover: document.getElementById('noCover').checked,
                     no_lyrics: document.getElementById('noLyrics').checked,
                     extra_tags: document.getElementById('extraTags').checked,
+                    save_playlist: document.getElementById('savePlaylist').checked,
                     enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                     max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                     retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -3100,6 +3156,7 @@ async def root():
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -3465,6 +3522,7 @@ async def root():
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -3684,6 +3742,7 @@ async def root():
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -4017,6 +4076,7 @@ async def root():
                 const noLyrics = localStorage.getItem('gamdl_no_lyrics');
                 const extraTags = localStorage.getItem('gamdl_extra_tags');
                 const includeVideosInDiscography = localStorage.getItem('gamdl_include_videos_in_discography');
+                const savePlaylist = localStorage.getItem('gamdl_save_playlist');
 
                 // Retry/delay options
                 const enableRetryDelay = localStorage.getItem('gamdl_enable_retry_delay');
@@ -4040,6 +4100,7 @@ async def root():
                 if (noLyrics) document.getElementById('noLyrics').checked = noLyrics === 'true';
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
                 if (includeVideosInDiscography === 'true') document.getElementById('includeVideosInDiscography').checked = true;
+                if (savePlaylist === 'true') document.getElementById('savePlaylist').checked = true;
                 if (enableRetryDelay !== null) document.getElementById('enableRetryDelay').checked = enableRetryDelay === 'true';
                 if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
@@ -4067,6 +4128,7 @@ async def root():
                 const noLyrics = document.getElementById('noLyrics').checked;
                 const extraTags = document.getElementById('extraTags').checked;
                 const includeVideosInDiscography = document.getElementById('includeVideosInDiscography').checked;
+                const savePlaylist = document.getElementById('savePlaylist').checked;
 
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
@@ -4090,6 +4152,7 @@ async def root():
                 localStorage.setItem('gamdl_no_lyrics', noLyrics);
                 localStorage.setItem('gamdl_extra_tags', extraTags);
                 localStorage.setItem('gamdl_include_videos_in_discography', includeVideosInDiscography);
+                localStorage.setItem('gamdl_save_playlist', savePlaylist);
                 localStorage.setItem('gamdl_enable_retry_delay', enableRetryDelay);
                 localStorage.setItem('gamdl_max_retries', maxRetries);
                 localStorage.setItem('gamdl_retry_delay', retryDelay);
@@ -4119,6 +4182,7 @@ async def root():
                         // Metadata options
                         no_lyrics: noLyrics,
                         extra_tags: extraTags,
+                        save_playlist: savePlaylist,
 
                         // Retry/delay options
                         enable_retry_delay: enableRetryDelay,
@@ -4386,6 +4450,7 @@ async def root():
             document.getElementById('noLyrics').addEventListener('change', savePreferences);
             document.getElementById('extraTags').addEventListener('change', savePreferences);
             document.getElementById('includeVideosInDiscography').addEventListener('change', savePreferences);
+            document.getElementById('savePlaylist').addEventListener('change', savePreferences);
             document.getElementById('enableRetryDelay').addEventListener('change', function() {
                 savePreferences();
                 toggleRetryDelaySettings();
@@ -4877,6 +4942,8 @@ async def save_all_settings_config(request_data: dict):
         config["no_lyrics"] = request_data["no_lyrics"]
     if "extra_tags" in request_data:
         config["extra_tags"] = request_data["extra_tags"]
+    if "save_playlist" in request_data:
+        config["save_playlist"] = request_data["save_playlist"]
 
     # Retry/delay options
     if "enable_retry_delay" in request_data:
@@ -5330,6 +5397,7 @@ async def download_podcast_episode_endpoint(request: Request):
             no_cover=config.get('no_cover', False),
             no_lyrics=config.get('no_lyrics', False),
             extra_tags=config.get('extra_tags', False),
+            save_playlist=config.get('save_playlist', False),
             podcast_name=podcast_name,
             episode_title=episode_title,
             episode_date=episode_date,
@@ -5855,6 +5923,7 @@ async def download_from_library(request_data: dict):
         no_cover=request_data.get("no_cover", False),
         no_lyrics=request_data.get("no_lyrics", False),
         extra_tags=request_data.get("extra_tags", False),
+        save_playlist=request_data.get("save_playlist", False),
         enable_retry_delay=request_data.get("enable_retry_delay", True),
         max_retries=request_data.get("max_retries", 3),
         retry_delay=request_data.get("retry_delay", 60),
@@ -6494,6 +6563,7 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             save_cover=not request.no_cover,
             cover_size=request.cover_size or 1200,
             cover_format=cover_format,
+            save_playlist=request.save_playlist,
         )
 
         song_downloader = AppleMusicSongDownloader(
@@ -6685,7 +6755,7 @@ async def health_check():
     return {"status": "ok"}
 
 
-def main(host: str = "127.0.0.1", port: int = 8080):
+def main(host: str = "127.0.0.1", port: int = 8000):
     """Start the web server."""
     import uvicorn
     import webbrowser
