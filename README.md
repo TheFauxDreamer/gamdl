@@ -23,13 +23,12 @@ These work well enough that I haven't encountered major issues or bugs that brea
 - One-click, download entire artist discography (albums, songs, EPs)
 - Set a monitored playlist to download new additions automatically (checks every 2 hours)
 - Continue queue after failed downloads
-
+- Apple Podcast Support, including bulk episode download
+- Download part of an Artists Discography
+- Improved Download Queue information
 
 ## ⚠️ WIP Features
 These are in "active" development and in varying states of useability. (Check the branches for these features)
-
-- Apple Podcast Support ([Try it early](https://github.com/TheFauxDreamer/gamdl/tree/podcasts))
-- Download part of an Artists Discography
 
 
 ## 🗓️ Future Features
@@ -37,7 +36,7 @@ These will come in time (maybe), I don't have a timeline tho.
 
 - Fix the "null songs" count in WebUI playlists
 - A better UI
-- Improved Download Queue information
+- mobile support for webUI (check up on it from your phone)
 
 -------------------------------------------------------------------------------------------------------------------------------
 
