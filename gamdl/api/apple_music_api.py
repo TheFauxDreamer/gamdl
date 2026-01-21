@@ -578,7 +578,8 @@ class AppleMusicApi:
             return
 
         next_uri_params = parse_qs(urlparse(next_uri).query)
-        limit = int(next_uri_params["offset"][0])
+        # Extract limit from query params, fallback to default if not present
+        limit = int(next_uri_params.get("limit", ["100"])[0])
         while next_uri:
             extended_api_data = await self._get_extended_api_data(
                 next_uri,
@@ -597,9 +598,8 @@ class AppleMusicApi:
         response = await self.client.get(
             AMP_API_URL + next_uri,
             params={
-                "limit": limit,
-                "extend": extend,
-                **parse_qs(urlparse(next_uri).query),
+                "extend": extend,  # Only override extend parameter
+                # Don't override limit - let the query string in next_uri handle it
             },
         )
         raise_for_status(response)

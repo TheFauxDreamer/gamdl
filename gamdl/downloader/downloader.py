@@ -145,7 +145,10 @@ class AppleMusicDownloader:
         async for extended_data in self.interface.apple_music_api.extend_api_data(
             collection_metadata["relationships"]["tracks"],
         ):
-            tracks_metadata.extend(extended_data["data"])
+            # Deduplicate by track ID to prevent double-counting
+            existing_ids = {track["id"] for track in tracks_metadata}
+            new_tracks = [track for track in extended_data["data"] if track["id"] not in existing_ids]
+            tracks_metadata.extend(new_tracks)
             page_count += 1
             logger.info(f"Fetching playlist tracks (page {page_count}, {len(tracks_metadata)} tracks so far)...")
 

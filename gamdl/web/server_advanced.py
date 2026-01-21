@@ -4309,6 +4309,9 @@ async def root():
             }
 
             function updateQueueUI(queueData) {
+                // Store for animation updates
+                lastQueueData = queueData;
+
                 // Update counts
                 const queued = queueData.items.filter(item => item.status === 'queued').length;
                 const downloading = queueData.items.filter(item => item.status === 'downloading').length;
@@ -4365,7 +4368,18 @@ async def root():
                         'cancelled': '[X]'
                     }[item.status] || '[ ]';
 
-                    const statusText = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+                    // Customize status text based on progress
+                    let statusText;
+                    if (item.status === 'downloading') {
+                        // Show "Preparing..." when metadata is being fetched (no progress yet)
+                        if (item.progress_total === 0) {
+                            statusText = 'Preparing';
+                        } else {
+                            statusText = 'Downloading';
+                        }
+                    } else {
+                        statusText = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+                    }
 
                     let actionButton = '';
                     if (item.status === 'queued') {
@@ -4392,9 +4406,18 @@ async def root():
 
                     // Calculate and display progress percentage inline with status
                     let progressInfo = '';
-                    if (item.progress_total > 0 && item.status === 'downloading') {
-                        const percentage = Math.round((item.progress_current / item.progress_total) * 100);
-                        progressInfo = ` - ${item.progress_current}/${item.progress_total} (${percentage}%)`;
+                    if (item.status === 'downloading') {
+                        if (item.progress_total > 0) {
+                            // Show download progress with count and percentage
+                            const percentage = Math.round((item.progress_current / item.progress_total) * 100);
+                            progressInfo = ` - ${item.progress_current}/${item.progress_total} (${percentage}%)`;
+                        } else {
+                            // Show animated ellipsis with fixed width to prevent layout shifts
+                            const dotCount = (Math.floor(Date.now() / 500) % 3) + 1;
+                            const dots = '.'.repeat(dotCount);
+                            // Use inline-block with monospace font for consistent width
+                            progressInfo = `<span style="display:inline-block;width:1.5em;font-family:monospace;text-align:left;">${dots}</span>`;
+                        }
                     }
 
                     // Display detailed statistics for multi-URL downloads
@@ -4469,13 +4492,32 @@ async def root():
             }
 
             // Start periodic queue status refresh
+            let lastQueueData = null;
+            let animationInterval = null;
+
             function startQueueRefresh() {
                 if (queueUpdateInterval) {
                     clearInterval(queueUpdateInterval);
                 }
 
-                // Refresh every 3 seconds
+                // Refresh queue data every 3 seconds
                 queueUpdateInterval = setInterval(refreshQueueStatus, 3000);
+
+                // Animate "Preparing..." ellipsis every 500ms (without fetching new data)
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                }
+                animationInterval = setInterval(() => {
+                    // Only re-render if we have data and there are preparing items
+                    if (lastQueueData) {
+                        const hasPreparing = lastQueueData.items.some(item =>
+                            item.status === 'downloading' && item.progress_total === 0
+                        );
+                        if (hasPreparing) {
+                            updateQueueUI(lastQueueData);
+                        }
+                    }
+                }, 500);
 
                 // Initial refresh
                 refreshQueueStatus();
@@ -4485,6 +4527,10 @@ async def root():
                 if (queueUpdateInterval) {
                     clearInterval(queueUpdateInterval);
                     queueUpdateInterval = null;
+                }
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                    animationInterval = null;
                 }
             }
 
