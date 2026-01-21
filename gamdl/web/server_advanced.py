@@ -1117,11 +1117,13 @@ async def root():
             }
             h1 {
                 color: #333;
-                margin-bottom: 10px;
+                margin-bottom: 5px;
+                font-size: 24px;
             }
             .subtitle {
                 color: #666;
-                margin-bottom: 30px;
+                margin-bottom: 20px;
+                font-size: 14px;
             }
             .form-group {
                 margin-bottom: 20px;
@@ -2369,11 +2371,13 @@ async def root():
 
                 /* Typography adjustments */
                 h1 {
-                    font-size: 24px;
+                    font-size: 20px;
+                    margin-bottom: 4px;
                 }
 
                 .subtitle {
-                    font-size: 14px;
+                    font-size: 13px;
+                    margin-bottom: 16px;
                 }
 
                 /* Form elements - stack vertically */
@@ -2480,7 +2484,13 @@ async def root():
                 }
 
                 h1 {
-                    font-size: 22px;
+                    font-size: 18px;
+                    margin-bottom: 3px;
+                }
+
+                .subtitle {
+                    font-size: 12px;
+                    margin-bottom: 12px;
                 }
             }
         </style>
@@ -2488,7 +2498,6 @@ async def root():
     <body>
         <div class="container">
             <h1>gamdl Advanced Web UI</h1>
-            <p class="subtitle">Browse your library or download from Apple Music URLs</p>
 
             <!-- View Navigation -->
             <!-- Desktop Navigation (hidden on mobile) -->
