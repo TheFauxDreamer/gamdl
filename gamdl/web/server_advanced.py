@@ -1335,12 +1335,23 @@ async def root():
                 transform: translateY(-2px);
                 box-shadow: 0 4px 8px rgba(0,0,0,0.15);
             }
-            .library-item img {
+            .library-item-artwork {
+                position: relative;
                 width: 100%;
-                height: auto;
+                padding-bottom: 100%;  /* 1:1 aspect ratio (height = width) */
+                background: #e0e0e0;   /* Gray placeholder background */
                 border-radius: 4px;
                 margin-bottom: 10px;
-                background: #e0e0e0;
+                overflow: hidden;
+            }
+            .library-item-artwork img {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;     /* Maintain aspect ratio, crop if needed */
+                border-radius: 4px;
             }
             .library-item-title {
                 font-weight: 600;
@@ -3065,9 +3076,15 @@ async def root():
                 const div = document.createElement('div');
                 div.className = 'library-item';
 
+                // Create artwork container with fixed aspect ratio
+                const artworkContainer = document.createElement('div');
+                artworkContainer.className = 'library-item-artwork';
+
                 const img = document.createElement('img');
                 img.src = item.artwork || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="300" height="300"%3E%3Crect fill="%23ddd" width="300" height="300"/%3E%3C/svg%3E';
                 img.alt = item.name;
+
+                artworkContainer.appendChild(img);
 
                 const title = document.createElement('div');
                 title.className = 'library-item-title';
@@ -3121,7 +3138,7 @@ async def root():
                         btnGroup.appendChild(btn);
                     }
 
-                    div.appendChild(img);
+                    div.appendChild(artworkContainer);
                     div.appendChild(title);
                     div.appendChild(subtitle);
                     div.appendChild(btnGroup);
@@ -3131,7 +3148,7 @@ async def root():
                     btn.textContent = 'Download';
                     btn.onclick = () => downloadLibraryItem(item.id, type, item.name, item.artist, false);
 
-                    div.appendChild(img);
+                    div.appendChild(artworkContainer);
                     div.appendChild(title);
                     div.appendChild(subtitle);
                     div.appendChild(btn);
@@ -3336,10 +3353,16 @@ async def root():
                 const div = document.createElement('div');
                 div.className = 'library-item';
 
+                // Create artwork container with fixed aspect ratio
+                const artworkContainer = document.createElement('div');
+                artworkContainer.className = 'library-item-artwork';
+
                 const img = document.createElement('img');
                 img.src = item.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                 img.alt = item.name;
-                div.appendChild(img);
+
+                artworkContainer.appendChild(img);
+                div.appendChild(artworkContainer);
 
                 const title = document.createElement('div');
                 title.className = 'library-item-title';
@@ -3636,11 +3659,16 @@ async def root():
                         checkbox.style.cursor = 'pointer';
                         item.appendChild(checkbox);
 
-                        // Artwork
+                        // Artwork container with fixed aspect ratio
+                        const artworkContainer = document.createElement('div');
+                        artworkContainer.className = 'library-item-artwork';
+
                         const img = document.createElement('img');
                         img.src = album.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                         img.alt = album.name;
-                        item.appendChild(img);
+
+                        artworkContainer.appendChild(img);
+                        item.appendChild(artworkContainer);
 
                         // Title
                         const title = document.createElement('div');
@@ -3683,11 +3711,16 @@ async def root():
                             checkbox.style.cursor = 'pointer';
                             item.appendChild(checkbox);
 
-                            // Artwork
+                            // Artwork container with fixed aspect ratio
+                            const artworkContainer = document.createElement('div');
+                            artworkContainer.className = 'library-item-artwork';
+
                             const img = document.createElement('img');
                             img.src = video.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                             img.alt = video.name;
-                            item.appendChild(img);
+
+                            artworkContainer.appendChild(img);
+                            item.appendChild(artworkContainer);
 
                             // Title
                             const title = document.createElement('div');
