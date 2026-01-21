@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional
 
+import httpx
+
 # Platform-specific file locking
 if sys.platform == 'win32':
     # On Windows, skip file locking for JSON config (single-user app, low risk)
@@ -37,7 +39,7 @@ else:
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -101,6 +103,9 @@ class QueueItem:
     url_count: int = 1
     progress_current: int = 0  # Current track/item being processed
     progress_total: int = 0  # Total tracks/items to process
+    success_count: int = 0  # Successfully downloaded items
+    skipped_count: int = 0  # Skipped items (already exist, not streamable)
+    failed_count: int = 0  # Failed items within this queue item
 
 # Global queue state
 download_queue: list[QueueItem] = []
@@ -115,6 +120,7 @@ class DownloadRequest(BaseModel):
     urls: list[str]
     cookies_path: Optional[str] = None
     output_path: Optional[str] = None
+    podcast_output_path: Optional[str] = None
     temp_path: Optional[str] = None
 
     # Common options
@@ -129,6 +135,13 @@ class DownloadRequest(BaseModel):
     no_cover: bool = False
     no_lyrics: bool = False
     extra_tags: bool = False
+    save_playlist: bool = False  # Enable playlist file generation (M3U/M3U8)
+
+    # Podcast-specific
+    podcast_name: Optional[str] = None
+    episode_title: Optional[str] = None
+    episode_date: Optional[str] = None
+    episode_metadata: Optional[list[dict]] = None  # For bulk downloads: list of {title, date} per URL
 
     # Retry & delay settings
     enable_retry_delay: bool = True  # Enable/disable retry and delay features
@@ -141,6 +154,10 @@ class DownloadRequest(BaseModel):
 
     # Queue behavior
     continue_on_error: bool = False  # Continue queue processing even if items fail
+
+    # Display customization (optional)
+    display_title: Optional[str] = None  # Custom display name for queue
+    display_type: Optional[str] = None  # Custom display type (e.g., "Discography", "Artist")
 
 
 class SessionResponse(BaseModel):
@@ -346,9 +363,53 @@ async def fetch_playlist_track_ids(playlist_info: dict) -> list[str]:
         raise
 
 
+async def _clear_monitored_playlist_files(playlist_info: dict, config: dict):
+    """Clear existing playlist files for a monitored playlist to prevent stale entries."""
+    from gamdl.downloader.downloader_base import AppleMusicBaseDownloader
+    from gamdl.interface.types import PlaylistTags
+
+    # Create a minimal base downloader instance just to calculate playlist file path
+    output_path = config.get('output_path', './Apple Music')
+
+    # Helper to convert empty strings to None
+    def clean_config_value(key, default=None):
+        value = config.get(key, default)
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    temp_downloader = AppleMusicBaseDownloader(
+        output_path=output_path,
+        playlist_file_template=clean_config_value('playlist_file_template', 'Playlists/{playlist_title}'),
+    )
+
+    # Build playlist tags from playlist_info
+    playlist_tags = PlaylistTags(
+        playlist_artist=playlist_info.get('curator_name', 'Unknown'),
+        playlist_id=playlist_info['playlist_id'],
+        playlist_title=playlist_info['playlist_name'],
+        playlist_track=1,  # Doesn't matter for path calculation
+    )
+
+    # Get playlist file path
+    playlist_file_path = temp_downloader.get_playlist_file_path(playlist_tags)
+
+    # Clear both M3U8 and M3U files
+    logger.info(f"Clearing monitored playlist files: {playlist_file_path}")
+    temp_downloader.clear_playlist_files(playlist_file_path)
+
+
 async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
     """Queue new tracks for download with proper song metadata."""
     logger.info(f"Found {len(new_track_ids)} new tracks in monitored playlist '{playlist_info['playlist_name']}'")
+
+    # Clear playlist files before adding new tracks (prevents stale entries)
+    config = load_webui_config()
+    if config.get('save_playlist', False):
+        try:
+            await _clear_monitored_playlist_files(playlist_info, config)
+        except Exception as e:
+            logger.warning(f"Failed to clear playlist files: {e}")
 
     # Check if API is initialized
     if not hasattr(app.state, "api") or app.state.api is None:
@@ -423,6 +484,7 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
             no_cover=config.get('no_cover', False),
             no_lyrics=config.get('no_lyrics', False),
             extra_tags=config.get('extra_tags', False),
+            save_playlist=config.get('save_playlist', False),
             enable_retry_delay=config.get('enable_retry_delay', True),
             max_retries=config.get('max_retries', 3),
             retry_delay=config.get('retry_delay', 60),
@@ -481,6 +543,7 @@ async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
         no_cover=config.get('no_cover', False),
         no_lyrics=config.get('no_lyrics', False),
         extra_tags=config.get('extra_tags', False),
+        save_playlist=config.get('save_playlist', False),
         enable_retry_delay=config.get('enable_retry_delay', True),
         max_retries=config.get('max_retries', 3),
         retry_delay=config.get('retry_delay', 60),
@@ -708,6 +771,9 @@ def get_queue_status() -> dict:
                     "error_message": item.error_message,
                     "progress_current": item.progress_current,
                     "progress_total": item.progress_total,
+                    "success_count": item.success_count,
+                    "skipped_count": item.skipped_count,
+                    "failed_count": item.failed_count,
                 }
                 for item in download_queue
             ],
@@ -835,7 +901,7 @@ async def process_queue():
             if websocket:
                 # Run download with WebSocket updates
                 try:
-                    await run_download_session(session_id, active_sessions[session_id], websocket)
+                    summary_message = await run_download_session(session_id, active_sessions[session_id], websocket)
 
                     # Success - apply queue item delay if configured
                     request = next_item.download_request
@@ -845,6 +911,7 @@ async def process_queue():
                     with queue_lock:
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
+                        next_item.error_message = summary_message  # Store summary for queue UI
 
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
@@ -907,7 +974,7 @@ async def process_queue():
                     class DummyWebSocket:
                         async def send_json(self, data): pass
 
-                    await run_download_session(session_id, active_sessions[session_id], DummyWebSocket())
+                    summary_message = await run_download_session(session_id, active_sessions[session_id], DummyWebSocket())
 
                     # Success - apply queue item delay if configured
                     request = next_item.download_request
@@ -917,6 +984,7 @@ async def process_queue():
                     with queue_lock:
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
+                        next_item.error_message = summary_message  # Store summary for queue UI
 
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
@@ -1267,12 +1335,23 @@ async def root():
                 transform: translateY(-2px);
                 box-shadow: 0 4px 8px rgba(0,0,0,0.15);
             }
-            .library-item img {
+            .library-item-artwork {
+                position: relative;
                 width: 100%;
-                height: auto;
+                padding-bottom: 100%;  /* 1:1 aspect ratio (height = width) */
+                background: #e0e0e0;   /* Gray placeholder background */
                 border-radius: 4px;
                 margin-bottom: 10px;
-                background: #e0e0e0;
+                overflow: hidden;
+            }
+            .library-item-artwork img {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;     /* Maintain aspect ratio, crop if needed */
+                border-radius: 4px;
             }
             .library-item-title {
                 font-weight: 600;
@@ -1555,6 +1634,12 @@ async def root():
                 font-size: 12px;
                 color: #666;
                 margin-bottom: 8px;
+            }
+            .queue-item-stats {
+                font-size: 12px;
+                color: #666;
+                margin-top: 4px;
+                padding: 4px 0;
             }
             .queue-item-status-icon {
                 width: 8px;
@@ -2149,7 +2234,13 @@ async def root():
                 <div class="form-group">
                     <label for="outputPath">Output Path</label>
                     <input type="text" id="outputPath" name="outputPath" placeholder="./downloads">
-                    <small>Directory where downloaded files will be saved</small>
+                    <small>Directory where downloaded music files will be saved</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="podcastOutputPath">Podcast Output Path</label>
+                    <input type="text" id="podcastOutputPath" name="podcastOutputPath" placeholder="./podcasts">
+                    <small>Directory where downloaded podcast files will be saved (leave empty to use Output Path)</small>
                 </div>
 
                 <h3>Audio Options</h3>
@@ -2204,6 +2295,7 @@ async def root():
                     <label>
                         <input type="checkbox" id="noCover" name="noCover">
                         <span>Skip cover art download</span>
+                        <small>Doesn't download a seperate JPG of the cover art. Songs still contain the artwork</small>
                     </label>
                 </div>
 
@@ -2212,6 +2304,7 @@ async def root():
                     <label>
                         <input type="checkbox" id="noLyrics" name="noLyrics">
                         <span>Skip lyrics download</span>
+                        <small>When enabled, when downloading songs, the accompanying .lrc lyric file is saved alongside the song</small>
                     </label>
                 </div>
 
@@ -2228,6 +2321,14 @@ async def root():
                         <span>Include music videos in artist discography downloads</span>
                     </label>
                     <small>When downloading an artist's discography, also include their music videos</small>
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="savePlaylist" name="savePlaylist">
+                        <span>Save playlist files (M3U/M3U8) when downloading playlists</span>
+                    </label>
+                    <small>Creates playlist files with relative paths to downloaded tracks</small>
                 </div>
 
                 <h3>Retry & Delay Options</h3>
@@ -2368,6 +2469,7 @@ async def root():
                     <button class="nav-tab" onclick="switchSearchTab('artists', this)">Artists</button>
                     <button class="nav-tab" onclick="switchSearchTab('playlists', this)">Playlists</button>
                     <button class="nav-tab" onclick="switchSearchTab('music-videos', this)">Music Videos</button>
+                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)">Podcasts</button>
                 </div>
 
                 <!-- Error Display -->
@@ -2456,6 +2558,18 @@ async def root():
                             <button onclick="loadMoreSearchResults('music-videos')">Load More</button>
                         </div>
                     </div>
+
+                    <!-- Podcasts Tab -->
+                    <div id="podcastsSearchTab" class="tab-content">
+                        <div id="podcastsSearchLoading" class="loading">Loading podcasts...</div>
+                        <div id="podcastsSearchEmpty" class="library-empty" style="display:none;">
+                            <p>No podcasts found</p>
+                        </div>
+                        <div id="podcastsSearchGrid" class="library-grid"></div>
+                        <div id="podcastsSearchLoadMore" class="load-more" style="display:none;">
+                            <button onclick="loadMoreSearchResults('podcasts')">Load More</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -2505,6 +2619,27 @@ async def root():
                             </svg>
                         </div>
                         <div>No downloads in queue</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Episode Modal -->
+            <div id="episodeModal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width: 900px;">
+                    <div class="modal-header">
+                        <h3 id="episodeModalTitle">Podcast Episodes</h3>
+                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: #666;">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
+                        <div id="episodeList" style="max-height: 600px; overflow-y: auto;"></div>
+                        <div id="episodeEmpty" class="library-empty" style="display:none;">
+                            <p>No episodes found</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button onclick="downloadAllPodcastEpisodes()" class="btn-primary">Download All Episodes</button>
+                        <button onclick="closeEpisodeModal()" class="btn-secondary">Close</button>
                     </div>
                 </div>
             </div>
@@ -2670,6 +2805,7 @@ async def root():
                     urls: urls,
                     cookies_path: document.getElementById('cookiesPath').value || null,
                     output_path: document.getElementById('outputPath').value || null,
+                    podcast_output_path: document.getElementById('podcastOutputPath').value || null,
                     song_codec: document.getElementById('songCodec').value || null,
                     cover_size: document.getElementById('coverSize').value ? parseInt(document.getElementById('coverSize').value) : null,
                     music_video_resolution: document.getElementById('musicVideoResolution').value || null,
@@ -2677,6 +2813,7 @@ async def root():
                     no_cover: document.getElementById('noCover').checked,
                     no_lyrics: document.getElementById('noLyrics').checked,
                     extra_tags: document.getElementById('extraTags').checked,
+                    save_playlist: document.getElementById('savePlaylist').checked,
                     enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                     max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                     retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -2773,8 +2910,8 @@ async def root():
                     clickedElement.classList.add('active');
                 }
 
-                // Show/hide tab content
-                document.querySelectorAll('.tab-content').forEach(content => {
+                // Show/hide tab content (scoped to Library view only)
+                document.querySelectorAll('#libraryView .tab-content').forEach(content => {
                     content.classList.remove('active');
                 });
                 document.getElementById(tab + 'Tab').classList.add('active');
@@ -2939,9 +3076,15 @@ async def root():
                 const div = document.createElement('div');
                 div.className = 'library-item';
 
+                // Create artwork container with fixed aspect ratio
+                const artworkContainer = document.createElement('div');
+                artworkContainer.className = 'library-item-artwork';
+
                 const img = document.createElement('img');
                 img.src = item.artwork || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="300" height="300"%3E%3Crect fill="%23ddd" width="300" height="300"/%3E%3C/svg%3E';
                 img.alt = item.name;
+
+                artworkContainer.appendChild(img);
 
                 const title = document.createElement('div');
                 title.className = 'library-item-title';
@@ -2995,7 +3138,7 @@ async def root():
                         btnGroup.appendChild(btn);
                     }
 
-                    div.appendChild(img);
+                    div.appendChild(artworkContainer);
                     div.appendChild(title);
                     div.appendChild(subtitle);
                     div.appendChild(btnGroup);
@@ -3005,7 +3148,7 @@ async def root():
                     btn.textContent = 'Download';
                     btn.onclick = () => downloadLibraryItem(item.id, type, item.name, item.artist, false);
 
-                    div.appendChild(img);
+                    div.appendChild(artworkContainer);
                     div.appendChild(title);
                     div.appendChild(subtitle);
                     div.appendChild(btn);
@@ -3044,6 +3187,7 @@ async def root():
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
@@ -3098,7 +3242,14 @@ async def root():
                 }
 
                 currentSearchQuery = query;
-                searchOffsets = { songs: 0, albums: 0, artists: 0, playlists: 0 };
+                searchOffsets = {
+                    songs: 0,
+                    albums: 0,
+                    artists: 0,
+                    playlists: 0,
+                    'music-videos': 0,
+                    'podcasts': 0
+                };
 
                 document.getElementById('allLoading').style.display = 'block';
                 document.getElementById('allGrid').innerHTML = '';
@@ -3209,10 +3360,16 @@ async def root():
                 const div = document.createElement('div');
                 div.className = 'library-item';
 
+                // Create artwork container with fixed aspect ratio
+                const artworkContainer = document.createElement('div');
+                artworkContainer.className = 'library-item-artwork';
+
                 const img = document.createElement('img');
                 img.src = item.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                 img.alt = item.name;
-                div.appendChild(img);
+
+                artworkContainer.appendChild(img);
+                div.appendChild(artworkContainer);
 
                 const title = document.createElement('div');
                 title.className = 'library-item-title';
@@ -3230,10 +3387,25 @@ async def root():
                 } else if (type === 'music-video') {
                     const duration = item.duration ? ` • ${Math.floor(item.duration / 60)}:${(item.duration % 60).toString().padStart(2, '0')}` : '';
                     subtitle.textContent = `${item.artist}${duration}`;
+                } else if (type === 'podcast') {
+                    subtitle.textContent = `${item.author || 'Unknown'}${item.episodeCount ? ' • ' + item.episodeCount + ' episodes' : ''}`;
                 }
                 div.appendChild(subtitle);
 
-                if (type !== 'artist') {
+                if (type === 'podcast') {
+                    // Podcast-specific button
+                    const btnContainer = document.createElement('div');
+                    btnContainer.style.marginTop = '10px';
+
+                    const viewEpisodesBtn = document.createElement('button');
+                    viewEpisodesBtn.textContent = 'View Episodes';
+                    viewEpisodesBtn.className = 'btn-primary';
+                    viewEpisodesBtn.style.width = '100%';
+                    viewEpisodesBtn.onclick = () => viewPodcastEpisodes(item.id, item.name);
+                    btnContainer.appendChild(viewEpisodesBtn);
+
+                    div.appendChild(btnContainer);
+                } else if (type !== 'artist') {
                     const btnContainer = document.createElement('div');
                     btnContainer.style.marginTop = '10px';
 
@@ -3389,17 +3561,20 @@ async def root():
                             output_path: document.getElementById('outputPath').value,
                             song_codec: document.getElementById('songCodec').value,
                             music_video_resolution: document.getElementById('musicVideoResolution').value,
-                            cover_size: document.getElementById('coverSize').value,
+                            cover_size: parseInt(document.getElementById('coverSize').value) || null,
                             cover_format: document.getElementById('coverFormat').value,
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
                             continue_on_error: document.getElementById('continueOnError').checked,
+                            display_title: `${artist.name} - Discography`,
+                            display_type: 'Discography',
                         })
                     });
 
@@ -3413,10 +3588,14 @@ async def root():
                 }
             }
 
+            let currentArtist = null;
             let currentArtistCatalog = null;
             let selectedArtistItems = new Set();
 
             async function viewArtistContent(artist) {
+                // Store current artist for use in download
+                currentArtist = artist;
+
                 // Show modal
                 document.getElementById('artistModal').style.display = 'flex';
                 document.getElementById('artistModalTitle').textContent = `${artist.name} - All Content`;
@@ -3487,11 +3666,16 @@ async def root():
                         checkbox.style.cursor = 'pointer';
                         item.appendChild(checkbox);
 
-                        // Artwork
+                        // Artwork container with fixed aspect ratio
+                        const artworkContainer = document.createElement('div');
+                        artworkContainer.className = 'library-item-artwork';
+
                         const img = document.createElement('img');
                         img.src = album.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                         img.alt = album.name;
-                        item.appendChild(img);
+
+                        artworkContainer.appendChild(img);
+                        item.appendChild(artworkContainer);
 
                         // Title
                         const title = document.createElement('div');
@@ -3534,11 +3718,16 @@ async def root():
                             checkbox.style.cursor = 'pointer';
                             item.appendChild(checkbox);
 
-                            // Artwork
+                            // Artwork container with fixed aspect ratio
+                            const artworkContainer = document.createElement('div');
+                            artworkContainer.className = 'library-item-artwork';
+
                             const img = document.createElement('img');
                             img.src = video.artwork || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect fill="%23ddd" width="180" height="180"/></svg>';
                             img.alt = video.name;
-                            item.appendChild(img);
+
+                            artworkContainer.appendChild(img);
+                            item.appendChild(artworkContainer);
 
                             // Title
                             const title = document.createElement('div');
@@ -3585,6 +3774,14 @@ async def root():
                 try {
                     const urls = Array.from(selectedArtistItems);
 
+                    // Determine display title based on selection
+                    let displayTitle = currentArtist ? `${currentArtist.name} - Selected Content` : 'Selected Content';
+                    if (urls.length === 1) {
+                        displayTitle = currentArtist ? `${currentArtist.name} - 1 item` : '1 item';
+                    } else {
+                        displayTitle = currentArtist ? `${currentArtist.name} - ${urls.length} items` : `${urls.length} items`;
+                    }
+
                     const response = await fetch('/api/download', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
@@ -3594,17 +3791,20 @@ async def root():
                             output_path: document.getElementById('outputPath').value,
                             song_codec: document.getElementById('songCodec').value,
                             music_video_resolution: document.getElementById('musicVideoResolution').value,
-                            cover_size: document.getElementById('coverSize').value,
+                            cover_size: parseInt(document.getElementById('coverSize').value) || null,
                             cover_format: document.getElementById('coverFormat').value,
                             no_cover: document.getElementById('noCover').checked,
                             no_lyrics: document.getElementById('noLyrics').checked,
                             extra_tags: document.getElementById('extraTags').checked,
+                            save_playlist: document.getElementById('savePlaylist').checked,
                             enable_retry_delay: document.getElementById('enableRetryDelay').checked,
                             max_retries: parseInt(document.getElementById('maxRetries').value) || 3,
                             retry_delay: parseInt(document.getElementById('retryDelay').value) || 60,
                             song_delay: parseFloat(document.getElementById('songDelay').value) || 0,
                             queue_item_delay: parseFloat(document.getElementById('queueItemDelay').value) || 0,
                             continue_on_error: document.getElementById('continueOnError').checked,
+                            display_title: displayTitle,
+                            display_type: 'Artist',
                         })
                     });
 
@@ -3638,6 +3838,7 @@ async def root():
                             (tab === 'albums' && tabText === 'albums') ||
                             (tab === 'artists' && tabText === 'artists') ||
                             (tab === 'playlists' && tabText === 'playlists') ||
+                            (tab === 'podcasts' && tabText === 'podcasts') ||
                             (tab === 'all' && tabText === 'all')) {
                             t.classList.add('active');
                         }
@@ -3650,6 +3851,7 @@ async def root():
                 document.getElementById('artistsSearchTab').classList.toggle('active', tab === 'artists');
                 document.getElementById('playlistsSearchTab').classList.toggle('active', tab === 'playlists');
                 document.getElementById('musicVideosSearchTab').classList.toggle('active', tab === 'music-videos');
+                document.getElementById('podcastsSearchTab').classList.toggle('active', tab === 'podcasts');
 
                 currentSearchTab = tab;
 
@@ -3680,26 +3882,44 @@ async def root():
                 }
 
                 try {
-                    const response = await fetch(
-                        `/api/search?term=${encodeURIComponent(currentSearchQuery)}&types=${type}&limit=50&offset=${offset}`
-                    );
+                    let response, data, results;
 
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Search failed');
+                    // Podcasts use iTunes Search API, not Apple Music API
+                    if (type === 'podcasts') {
+                        response = await fetch(
+                            `/api/podcasts/search?term=${encodeURIComponent(currentSearchQuery)}&limit=50&offset=${offset}`
+                        );
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Podcast search failed');
+                        }
+
+                        data = await response.json();
+                        results = data.podcasts || [];
+                    } else {
+                        // Apple Music search
+                        response = await fetch(
+                            `/api/search?term=${encodeURIComponent(currentSearchQuery)}&types=${type}&limit=50&offset=${offset}`
+                        );
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Search failed');
+                        }
+
+                        data = await response.json();
+                        results = data[type] || [];
                     }
 
-                    const data = await response.json();
                     loading.style.display = 'none';
-
-                    const results = data[type] || [];
 
                     if (results.length === 0 && offset === 0) {
                         empty.style.display = 'block';
                         return;
                     }
 
-                    const singularType = type.slice(0, -1);
+                    const singularType = type === 'podcasts' ? 'podcast' : type.slice(0, -1);
                     results.forEach(item => {
                         const itemElement = createSearchResultItem(item, singularType);
                         grid.appendChild(itemElement);
@@ -3723,11 +3943,179 @@ async def root():
                 loadSearchTabResults(type, true);
             }
 
+            // Podcast episode functions
+            async function viewPodcastEpisodes(podcastId, podcastName) {
+                document.getElementById('episodeModalTitle').textContent = podcastName;
+                document.getElementById('episodeModal').style.display = 'flex';
+                document.getElementById('episodeLoading').style.display = 'block';
+                document.getElementById('episodeList').innerHTML = '';
+                document.getElementById('episodeEmpty').style.display = 'none';
+
+                // Store podcast name and episodes for downloads
+                window.currentPodcastName = podcastName;
+                window.currentPodcastEpisodes = [];
+
+                try {
+                    const response = await fetch(`/api/podcasts/${podcastId}/episodes?limit=200`);
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to load episodes');
+                    }
+
+                    const data = await response.json();
+                    document.getElementById('episodeLoading').style.display = 'none';
+
+                    if (!data.episodes || data.episodes.length === 0) {
+                        document.getElementById('episodeEmpty').style.display = 'block';
+                        return;
+                    }
+
+                    // Store episodes globally for download all functionality
+                    window.currentPodcastEpisodes = data.episodes;
+                    displayPodcastEpisodes(data.episodes);
+                } catch (error) {
+                    document.getElementById('episodeLoading').style.display = 'none';
+                    alert(`Error loading episodes: ${error.message}`);
+                }
+            }
+
+            function displayPodcastEpisodes(episodes) {
+                const list = document.getElementById('episodeList');
+                list.innerHTML = '';
+
+                episodes.forEach(episode => {
+                    const episodeDiv = document.createElement('div');
+                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #eee;';
+
+                    const infoDiv = document.createElement('div');
+                    infoDiv.style.flex = '1';
+
+                    const title = document.createElement('div');
+                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px;';
+                    title.textContent = episode.title;
+                    infoDiv.appendChild(title);
+
+                    const meta = document.createElement('div');
+                    meta.style.cssText = 'font-size: 13px; color: #666;';
+                    const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
+                    const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
+                    meta.textContent = `${date}${duration}`;
+                    infoDiv.appendChild(meta);
+
+                    episodeDiv.appendChild(infoDiv);
+
+                    const downloadBtn = document.createElement('button');
+                    downloadBtn.textContent = 'Download';
+                    downloadBtn.className = 'btn-primary';
+                    downloadBtn.style.marginLeft = '15px';
+                    downloadBtn.onclick = () => downloadPodcastEpisode(episode.url, episode.title, episode.date);
+                    episodeDiv.appendChild(downloadBtn);
+
+                    list.appendChild(episodeDiv);
+                });
+            }
+
+            async function downloadPodcastEpisode(episodeUrl, episodeTitle, episodeDate) {
+                if (!episodeUrl) {
+                    console.error('Episode URL not available');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/podcasts/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            episode_url: episodeUrl,
+                            episode_title: episodeTitle,
+                            episode_date: episodeDate,
+                            podcast_name: window.currentPodcastName || 'Unknown Podcast'
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        console.error('Download failed:', error.detail || 'Unknown error');
+                    }
+                } catch (error) {
+                    console.error('Error queueing download:', error.message);
+                }
+            }
+
+            async function downloadAllPodcastEpisodes() {
+                if (!window.currentPodcastEpisodes || window.currentPodcastEpisodes.length === 0) {
+                    alert('No episodes available to download');
+                    return;
+                }
+
+                const episodeCount = window.currentPodcastEpisodes.length;
+                const podcastName = window.currentPodcastName || 'Unknown Podcast';
+
+                // Confirm with user
+                const confirmed = confirm(
+                    `Download all ${episodeCount} episodes of "${podcastName}"?\n\n` +
+                    `This will add ${episodeCount} episodes to the download queue.`
+                );
+
+                if (!confirmed) {
+                    return;
+                }
+
+                try {
+                    // Filter episodes with valid URLs and collect both URLs and metadata
+                    const validEpisodes = window.currentPodcastEpisodes.filter(ep => ep.url);
+
+                    if (validEpisodes.length === 0) {
+                        alert('No valid episode URLs found');
+                        return;
+                    }
+
+                    const episodeUrls = validEpisodes.map(ep => ep.url);
+                    const episodeMetadata = validEpisodes.map(ep => ({
+                        title: ep.title || 'Unknown Episode',
+                        date: ep.date || null
+                    }));
+
+                    // Submit download request with all episode URLs and metadata
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            urls: episodeUrls,
+                            cookies_path: document.getElementById('cookiesPath').value || null,
+                            output_path: document.getElementById('outputPath').value || null,
+                            podcast_output_path: document.getElementById('podcastOutputPath').value || null,
+                            podcast_name: podcastName,
+                            episode_metadata: episodeMetadata,
+                            display_title: `${podcastName} - All Episodes`,
+                            display_type: 'Podcast',
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        alert(`Download failed: ${error.detail || 'Unknown error'}`);
+                        return;
+                    }
+
+                    alert(`Successfully added ${episodeUrls.length} episodes to download queue!`);
+                    closeEpisodeModal();
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            }
+
+            function closeEpisodeModal() {
+                document.getElementById('episodeModal').style.display = 'none';
+            }
+
             // Load and save user preferences
             function loadPreferences() {
                 // Paths
                 const cookiesPath = localStorage.getItem('gamdl_cookies_path');
                 const outputPath = localStorage.getItem('gamdl_output_path');
+                const podcastOutputPath = localStorage.getItem('gamdl_podcast_output_path');
 
                 // Audio options
                 const songCodec = localStorage.getItem('gamdl_song_codec');
@@ -3742,6 +4130,7 @@ async def root():
                 const noLyrics = localStorage.getItem('gamdl_no_lyrics');
                 const extraTags = localStorage.getItem('gamdl_extra_tags');
                 const includeVideosInDiscography = localStorage.getItem('gamdl_include_videos_in_discography');
+                const savePlaylist = localStorage.getItem('gamdl_save_playlist');
 
                 // Retry/delay options
                 const enableRetryDelay = localStorage.getItem('gamdl_enable_retry_delay');
@@ -3756,6 +4145,7 @@ async def root():
                 // Apply saved values
                 if (cookiesPath) document.getElementById('cookiesPath').value = cookiesPath;
                 if (outputPath) document.getElementById('outputPath').value = outputPath;
+                if (podcastOutputPath) document.getElementById('podcastOutputPath').value = podcastOutputPath;
                 if (songCodec) document.getElementById('songCodec').value = songCodec;
                 if (musicVideoResolution) document.getElementById('musicVideoResolution').value = musicVideoResolution;
                 if (coverSize) document.getElementById('coverSize').value = coverSize;
@@ -3764,6 +4154,7 @@ async def root():
                 if (noLyrics) document.getElementById('noLyrics').checked = noLyrics === 'true';
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
                 if (includeVideosInDiscography === 'true') document.getElementById('includeVideosInDiscography').checked = true;
+                if (savePlaylist === 'true') document.getElementById('savePlaylist').checked = true;
                 if (enableRetryDelay !== null) document.getElementById('enableRetryDelay').checked = enableRetryDelay === 'true';
                 if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
@@ -3776,6 +4167,7 @@ async def root():
                 // Paths
                 const cookiesPath = document.getElementById('cookiesPath').value;
                 const outputPath = document.getElementById('outputPath').value;
+                const podcastOutputPath = document.getElementById('podcastOutputPath').value;
 
                 // Audio options
                 const songCodec = document.getElementById('songCodec').value;
@@ -3790,6 +4182,7 @@ async def root():
                 const noLyrics = document.getElementById('noLyrics').checked;
                 const extraTags = document.getElementById('extraTags').checked;
                 const includeVideosInDiscography = document.getElementById('includeVideosInDiscography').checked;
+                const savePlaylist = document.getElementById('savePlaylist').checked;
 
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
@@ -3804,6 +4197,7 @@ async def root():
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
+                localStorage.setItem('gamdl_podcast_output_path', podcastOutputPath);
                 localStorage.setItem('gamdl_song_codec', songCodec);
                 localStorage.setItem('gamdl_music_video_resolution', musicVideoResolution);
                 localStorage.setItem('gamdl_cover_size', coverSize);
@@ -3812,6 +4206,7 @@ async def root():
                 localStorage.setItem('gamdl_no_lyrics', noLyrics);
                 localStorage.setItem('gamdl_extra_tags', extraTags);
                 localStorage.setItem('gamdl_include_videos_in_discography', includeVideosInDiscography);
+                localStorage.setItem('gamdl_save_playlist', savePlaylist);
                 localStorage.setItem('gamdl_enable_retry_delay', enableRetryDelay);
                 localStorage.setItem('gamdl_max_retries', maxRetries);
                 localStorage.setItem('gamdl_retry_delay', retryDelay);
@@ -3827,6 +4222,7 @@ async def root():
                         // Paths
                         cookies_path: cookiesPath,
                         output_path: outputPath,
+                        podcast_output_path: podcastOutputPath,
 
                         // Audio options
                         song_codec: songCodec,
@@ -3840,6 +4236,7 @@ async def root():
                         // Metadata options
                         no_lyrics: noLyrics,
                         extra_tags: extraTags,
+                        save_playlist: savePlaylist,
 
                         // Retry/delay options
                         enable_retry_delay: enableRetryDelay,
@@ -3952,6 +4349,9 @@ async def root():
             }
 
             function updateQueueUI(queueData) {
+                // Store for animation updates
+                lastQueueData = queueData;
+
                 // Update counts
                 const queued = queueData.items.filter(item => item.status === 'queued').length;
                 const downloading = queueData.items.filter(item => item.status === 'downloading').length;
@@ -4008,7 +4408,18 @@ async def root():
                         'cancelled': '[X]'
                     }[item.status] || '[ ]';
 
-                    const statusText = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+                    // Customize status text based on progress
+                    let statusText;
+                    if (item.status === 'downloading') {
+                        // Show "Preparing..." when metadata is being fetched (no progress yet)
+                        if (item.progress_total === 0) {
+                            statusText = 'Preparing';
+                        } else {
+                            statusText = 'Downloading';
+                        }
+                    } else {
+                        statusText = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+                    }
 
                     let actionButton = '';
                     if (item.status === 'queued') {
@@ -4018,17 +4429,61 @@ async def root():
                     }
                     // Note: No "View Progress" button for downloading items since they run in background without WebSocket
 
-                    const errorMessage = item.error_message ?
-                        `<div class="queue-item-error">Error: ${escapeHtml(item.error_message)}</div>` : '';
+                    // Display completion/error message (error_message field is used for both)
+                    let statusMessage = '';
+                    if (item.error_message) {
+                        if (item.status === 'completed') {
+                            // For completed items, show message without "Error:" prefix
+                            statusMessage = `<div class="queue-item-info">${escapeHtml(item.error_message)}</div>`;
+                        } else if (item.status === 'failed') {
+                            // For failed items, show with "Error:" prefix
+                            statusMessage = `<div class="queue-item-error">Error: ${escapeHtml(item.error_message)}</div>`;
+                        }
+                    }
 
                     const urlInfo = item.url_count > 1 ?
                         `<div class="queue-item-info">${item.url_count} URLs</div>` : '';
 
                     // Calculate and display progress percentage inline with status
                     let progressInfo = '';
-                    if (item.progress_total > 0 && item.status === 'downloading') {
-                        const percentage = Math.round((item.progress_current / item.progress_total) * 100);
-                        progressInfo = ` - ${item.progress_current}/${item.progress_total} (${percentage}%)`;
+                    if (item.status === 'downloading') {
+                        if (item.progress_total > 0) {
+                            // Show download progress with count and percentage
+                            const percentage = Math.round((item.progress_current / item.progress_total) * 100);
+                            progressInfo = ` - ${item.progress_current}/${item.progress_total} (${percentage}%)`;
+                        } else {
+                            // Show animated ellipsis with fixed width to prevent layout shifts
+                            const dotCount = (Math.floor(Date.now() / 500) % 3) + 1;
+                            const dots = '.'.repeat(dotCount);
+                            // Use inline-block with monospace font for consistent width
+                            progressInfo = `<span style="display:inline-block;width:1.5em;font-family:monospace;text-align:left;">${dots}</span>`;
+                        }
+                    }
+
+                    // Display detailed statistics for multi-URL downloads
+                    let statsHtml = '';
+                    if (item.url_count > 1) {
+                        const stats = [];
+                        const total = (item.success_count || 0) + (item.skipped_count || 0) + (item.failed_count || 0);
+
+                        // Show statistics for completed items
+                        if (item.status === 'completed' && total > 0) {
+                            if (item.success_count > 0) stats.push(`${item.success_count} successful`);
+                            if (item.skipped_count > 0) stats.push(`${item.skipped_count} skipped`);
+                            if (item.failed_count > 0) stats.push(`${item.failed_count} failed`);
+                        }
+                        // Show real-time statistics for downloading items
+                        else if (item.status === 'downloading' && total > 0) {
+                            const parts = [];
+                            if (item.success_count > 0) parts.push(`${item.success_count} done`);
+                            if (item.skipped_count > 0) parts.push(`${item.skipped_count} skipped`);
+                            if (item.failed_count > 0) parts.push(`${item.failed_count} failed`);
+                            if (parts.length > 0) stats.push(parts.join(', '));
+                        }
+
+                        if (stats.length > 0) {
+                            statsHtml = `<div class="queue-item-stats">${stats.join(', ')}</div>`;
+                        }
                     }
 
                     return `
@@ -4042,7 +4497,8 @@ async def root():
                                 <span class="queue-item-status">${statusText}${progressInfo}</span>
                             </div>
                             ${urlInfo}
-                            ${errorMessage}
+                            ${statsHtml}
+                            ${statusMessage}
                             <div class="queue-item-actions">
                                 ${actionButton}
                             </div>
@@ -4076,13 +4532,32 @@ async def root():
             }
 
             // Start periodic queue status refresh
+            let lastQueueData = null;
+            let animationInterval = null;
+
             function startQueueRefresh() {
                 if (queueUpdateInterval) {
                     clearInterval(queueUpdateInterval);
                 }
 
-                // Refresh every 3 seconds
+                // Refresh queue data every 3 seconds
                 queueUpdateInterval = setInterval(refreshQueueStatus, 3000);
+
+                // Animate "Preparing..." ellipsis every 500ms (without fetching new data)
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                }
+                animationInterval = setInterval(() => {
+                    // Only re-render if we have data and there are preparing items
+                    if (lastQueueData) {
+                        const hasPreparing = lastQueueData.items.some(item =>
+                            item.status === 'downloading' && item.progress_total === 0
+                        );
+                        if (hasPreparing) {
+                            updateQueueUI(lastQueueData);
+                        }
+                    }
+                }, 500);
 
                 // Initial refresh
                 refreshQueueStatus();
@@ -4093,11 +4568,16 @@ async def root():
                     clearInterval(queueUpdateInterval);
                     queueUpdateInterval = null;
                 }
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                    animationInterval = null;
+                }
             }
 
             // Add event listeners to save preferences when fields change
             document.getElementById('cookiesPath').addEventListener('change', savePreferences);
             document.getElementById('outputPath').addEventListener('change', savePreferences);
+            document.getElementById('podcastOutputPath').addEventListener('change', savePreferences);
             document.getElementById('songCodec').addEventListener('change', savePreferences);
             document.getElementById('musicVideoResolution').addEventListener('change', savePreferences);
             document.getElementById('coverSize').addEventListener('change', savePreferences);
@@ -4106,6 +4586,7 @@ async def root():
             document.getElementById('noLyrics').addEventListener('change', savePreferences);
             document.getElementById('extraTags').addEventListener('change', savePreferences);
             document.getElementById('includeVideosInDiscography').addEventListener('change', savePreferences);
+            document.getElementById('savePlaylist').addEventListener('change', savePreferences);
             document.getElementById('enableRetryDelay').addEventListener('change', function() {
                 savePreferences();
                 toggleRetryDelaySettings();
@@ -4523,15 +5004,19 @@ async def remove_queue_item(item_id: str):
 
 @app.post("/api/queue/clear")
 async def clear_queue_endpoint():
-    """Clear all completed/failed items from queue."""
+    """Clear all completed/failed items from queue and resume if paused."""
     with queue_lock:
         global download_queue
         download_queue = [
             item for item in download_queue
             if item.status in [QueueItemStatus.QUEUED, QueueItemStatus.DOWNLOADING]
         ]
+
+    # Resume queue if it's paused
+    resume_queue()
+
     await broadcast_queue_update()
-    return {"status": "cleared", "message": "Completed items cleared"}
+    return {"status": "cleared", "message": "Completed items cleared and queue resumed"}
 
 
 @app.post("/api/config/cookies-path")
@@ -4569,6 +5054,8 @@ async def save_all_settings_config(request_data: dict):
         config["cookies_path"] = clean_value(request_data["cookies_path"])
     if "output_path" in request_data:
         config["output_path"] = clean_value(request_data["output_path"])
+    if "podcast_output_path" in request_data:
+        config["podcast_output_path"] = clean_value(request_data["podcast_output_path"])
     if "temp_path" in request_data:
         config["temp_path"] = clean_value(request_data["temp_path"])
     if "final_path_template" in request_data:
@@ -4595,6 +5082,8 @@ async def save_all_settings_config(request_data: dict):
         config["no_lyrics"] = request_data["no_lyrics"]
     if "extra_tags" in request_data:
         config["extra_tags"] = request_data["extra_tags"]
+    if "save_playlist" in request_data:
+        config["save_playlist"] = request_data["save_playlist"]
 
     # Retry/delay options
     if "enable_retry_delay" in request_data:
@@ -4816,7 +5305,7 @@ async def search_apple_music(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -4931,6 +5420,148 @@ async def search_apple_music(
         )
 
 
+@app.get("/api/podcasts/search")
+async def search_podcasts_endpoint(term: str, limit: int = 50, offset: int = 0):
+    """Search for podcasts using iTunes Search API."""
+    from gamdl.api.itunes_api import ItunesApi
+
+    try:
+        # Initialize iTunes API (doesn't require authentication)
+        if not hasattr(app.state, "itunes_api"):
+            app.state.itunes_api = ItunesApi(storefront="us", language="en-US")
+
+        itunes = app.state.itunes_api
+        results = await itunes.search_podcasts(term=term, limit=limit, offset=offset)
+
+        # Format response
+        podcasts = []
+        for item in results.get("results", []):
+            if item.get("wrapperType") == "track" and item.get("kind") == "podcast":
+                podcasts.append({
+                    "id": item["collectionId"],
+                    "name": item["collectionName"],
+                    "author": item.get("artistName", "Unknown"),
+                    "artwork": item.get("artworkUrl600", "").replace("{w}", "300").replace("{h}", "300"),
+                    "episodeCount": item.get("trackCount", 0),
+                    "feedUrl": item.get("feedUrl"),
+                    "genres": item.get("genres", [])
+                })
+
+        return {
+            "podcasts": podcasts,
+            "has_more": len(podcasts) >= limit,
+            "next_offset": offset + len(podcasts)
+        }
+
+    except Exception as e:
+        logger.error(f"Podcast search failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Podcast search failed: {str(e)}"
+        )
+
+
+@app.get("/api/podcasts/{podcast_id}/episodes")
+async def get_podcast_episodes_endpoint(podcast_id: int, limit: int = 200):
+    """Get episodes for a specific podcast."""
+    from gamdl.api.itunes_api import ItunesApi
+
+    try:
+        if not hasattr(app.state, "itunes_api"):
+            app.state.itunes_api = ItunesApi(storefront="us", language="en-US")
+
+        itunes = app.state.itunes_api
+        results = await itunes.get_podcast_episodes(podcast_id=podcast_id, limit=limit)
+
+        # Format response
+        episodes = []
+        for item in results.get("results", []):
+            if item.get("kind") == "podcast-episode":
+                episodes.append({
+                    "id": item["trackId"],
+                    "title": item["trackName"],
+                    "url": item.get("episodeUrl"),
+                    "description": item.get("description", ""),
+                    "date": item.get("releaseDate"),
+                    "duration": item.get("trackTimeMillis", 0) / 1000 if item.get("trackTimeMillis") else 0,
+                    "episodeNumber": item.get("trackNumber")
+                })
+
+        return {"episodes": episodes}
+
+    except Exception as e:
+        logger.error(f"Failed to get podcast episodes: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get podcast episodes: {str(e)}"
+        )
+
+
+@app.post("/api/podcasts/download")
+async def download_podcast_episode_endpoint(request: Request):
+    """Queue a podcast episode for download."""
+    try:
+        request_data = await request.json()
+        episode_url = request_data.get("episode_url")
+        episode_title = request_data.get("episode_title", "Podcast Episode")
+        episode_date = request_data.get("episode_date")
+        podcast_name = request_data.get("podcast_name", "Unknown Podcast")
+
+        if not episode_url:
+            raise HTTPException(status_code=400, detail="Missing episode_url")
+
+        # Load config for output path and settings
+        config = load_webui_config()
+
+        # Parse cover_size as integer
+        cover_size = config.get('cover_size')
+        if cover_size:
+            try:
+                cover_size = int(cover_size)
+            except (ValueError, TypeError):
+                cover_size = 1200
+        else:
+            cover_size = 1200
+
+        # Create download request for the podcast episode
+        download_request = DownloadRequest(
+            urls=[episode_url],
+            cookies_path=None,  # Podcasts don't need authentication
+            output_path=config.get('output_path'),
+            podcast_output_path=config.get('podcast_output_path'),
+            temp_path=config.get('temp_path'),
+            final_path_template=config.get('final_path_template'),
+            song_codec=config.get('song_codec', 'aac'),
+            cover_size=cover_size,
+            cover_format=config.get('cover_format', 'jpg'),
+            no_cover=config.get('no_cover', False),
+            no_lyrics=config.get('no_lyrics', False),
+            extra_tags=config.get('extra_tags', False),
+            save_playlist=config.get('save_playlist', False),
+            podcast_name=podcast_name,
+            episode_title=episode_title,
+            episode_date=episode_date,
+        )
+
+        # Add to queue with podcast-specific display info
+        display_info = {
+            "title": episode_title,
+            "type": "Podcast Episode"
+        }
+        add_to_queue(download_request, display_info)
+
+        return {"success": True, "message": "Episode added to queue"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to queue podcast download: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue podcast download: {str(e)}"
+        )
+
+
 @app.get("/api/artist/{artist_id}/catalog")
 async def get_artist_catalog(
     artist_id: str,
@@ -4940,7 +5571,7 @@ async def get_artist_catalog(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5074,9 +5705,17 @@ async def get_artist_catalog(
 @app.post("/api/download", response_model=SessionResponse)
 async def start_download(request: DownloadRequest):
     """Add download to queue instead of starting immediately."""
-    # Extract display info from URLs
+    # Extract display info from URLs or use custom display info
     display_info = None
-    if request.urls:
+
+    # Use custom display info if provided
+    if request.display_title or request.display_type:
+        display_info = {
+            "title": request.display_title or "Unknown",
+            "type": request.display_type or "url"
+        }
+    elif request.urls:
+        # Fall back to extracting from URL
         first_url = request.urls[0]
         url_info = extract_display_info_from_url(first_url)
 
@@ -5117,7 +5756,7 @@ async def get_library_albums(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5177,7 +5816,7 @@ async def get_library_playlists(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5237,7 +5876,7 @@ async def get_library_songs(
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5304,7 +5943,7 @@ async def download_from_library(request_data: dict):
     if not hasattr(app.state, "api") or app.state.api is None:
         raise HTTPException(
             status_code=401,
-            detail="API not initialized. Please set your cookies path in Settings, then restart the server."
+            detail="API not initialized. Please set your cookies path in Settings, then restart the server. Use this extension to generate cookies.txt: https://addons.mozilla.org/addon/export-cookies-txt"
         )
 
     api = app.state.api
@@ -5424,6 +6063,7 @@ async def download_from_library(request_data: dict):
         no_cover=request_data.get("no_cover", False),
         no_lyrics=request_data.get("no_lyrics", False),
         extra_tags=request_data.get("extra_tags", False),
+        save_playlist=request_data.get("save_playlist", False),
         enable_retry_delay=request_data.get("enable_retry_delay", True),
         max_retries=request_data.get("max_retries", 3),
         retry_delay=request_data.get("retry_delay", 60),
@@ -5631,8 +6271,8 @@ async def download_with_retry(
     retry_delay: int,
     websocket: WebSocket,
     session_id: str
-) -> bool:
-    """Download item with retry logic. Returns True if successful, False if all retries exhausted."""
+) -> str:
+    """Download item with retry logic. Returns 'success', 'skipped', or 'failed'."""
     import asyncio
 
     # Extract track name for retry messages
@@ -5664,16 +6304,16 @@ async def download_with_retry(
                     "message": f"Download succeeded after {attempts} retry attempt(s)",
                     "level": "success"
                 })
-            return True
+            return "success"
 
         except MediaFileExists as e:
-            # File already exists - treat as success (skip)
+            # File already exists - treat as skip
             await websocket.send_json({
                 "type": "log",
-                "message": f"Skipping: {str(e)}",
+                "message": f"Already downloaded (file exists): {track_name}",
                 "level": "info"
             })
-            return True  # Skip, don't retry
+            return "skipped"  # Skip, don't retry
 
         except (NotStreamable, FormatNotAvailable) as e:
             # Permanent content issues - don't retry, log as warning and skip
@@ -5682,7 +6322,7 @@ async def download_with_retry(
                 "message": f"Content unavailable: {str(e)}",
                 "level": "warning"
             })
-            return True  # Skip, don't retry (retrying won't fix these issues)
+            return "skipped"  # Skip, don't retry (retrying won't fix these issues)
 
         except ExecutableNotFound as e:
             # Missing required executable (e.g., mp4decrypt for music videos)
@@ -5736,13 +6376,223 @@ async def download_with_retry(
                     await asyncio.sleep(retry_delay)
                 else:
                     # No retries configured, fail immediately
-                    return False
+                    return "failed"
             else:
                 # All retries exhausted
                 await safe_send_log(websocket, f"Download failed after {max_retries + 1} attempts: {error_msg}", "error")
-                return False
+                return "failed"
 
-    return False
+    return "failed"
+
+
+def is_direct_audio_url(url: str) -> bool:
+    """Check if URL is a direct audio file (not Apple Music).
+
+    Podcast URLs are direct HTTP links to MP3/M4A files.
+    Apple Music URLs always start with https://music.apple.com
+    """
+    return not url.startswith("https://music.apple.com")
+
+
+async def download_podcast_episodes(session_id: str, session: dict, websocket: WebSocket):
+    """Download podcast episodes directly via HTTP (no authentication needed)."""
+    request: DownloadRequest = session["request"]
+
+    logger.info(f"download_podcast_episodes called with session_id={session_id}")
+    logger.info(f"Podcast URLs: {request.urls}")
+
+    async def send_log(message: str, level: str = "info"):
+        """Send a log message via WebSocket and to logger."""
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+        try:
+            await websocket.send_json({
+                "type": "log",
+                "message": message,
+                "level": level,
+            })
+        except:
+            pass
+
+    try:
+        # Setup output directory - use podcast-specific path if provided, otherwise fall back to music output path
+        if request.podcast_output_path and request.podcast_output_path.strip():
+            output_path = request.podcast_output_path.strip()
+        elif request.output_path and request.output_path.strip():
+            output_path = request.output_path.strip()
+        else:
+            output_path = "./downloads"
+
+        if output_path.startswith("~"):
+            output_path = os.path.expanduser(output_path)
+
+        base_output_dir = Path(output_path)
+
+        # Create podcast-specific subdirectory if podcast name is available
+        if request.podcast_name:
+            import re
+            # Sanitize podcast name for filesystem
+            safe_podcast_name = re.sub(r'[\\/:*?"<>|]', '_', request.podcast_name)
+            output_dir = base_output_dir / safe_podcast_name
+        else:
+            output_dir = base_output_dir
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        await send_log(f"Downloading {len(request.urls)} podcast episode(s)...")
+
+        # Initialize progress tracking
+        if current_downloading_item:
+            with queue_lock:
+                current_downloading_item.progress_total = len(request.urls)
+                current_downloading_item.progress_current = 0
+            await broadcast_queue_update()
+
+        # Pre-cache existing files in directory for fast lookup
+        existing_files = set()
+        if output_dir.exists():
+            try:
+                existing_files = {f.name for f in output_dir.iterdir() if f.is_file()}
+                logger.info(f"Found {len(existing_files)} existing files in {output_dir}")
+            except Exception as e:
+                logger.warning(f"Could not list directory for caching: {e}")
+                # Continue anyway, will check files individually
+
+        # Download each episode
+        for url_index, url in enumerate(request.urls, 1):
+            # Check for cancellation
+            if cancellation_flags.get(session_id, False):
+                await send_log("Download cancelled by user", "warning")
+                break
+
+            try:
+                # Get episode metadata for this URL (for bulk downloads)
+                episode_title = None
+                episode_date = None
+
+                if request.episode_metadata and len(request.episode_metadata) >= url_index:
+                    # Bulk download: get metadata for current episode (url_index is 1-based)
+                    metadata = request.episode_metadata[url_index - 1]
+                    episode_title = metadata.get('title')
+                    episode_date = metadata.get('date')
+                else:
+                    # Single episode download: use request fields
+                    episode_title = request.episode_title
+                    episode_date = request.episode_date
+
+                # Extract file extension from URL (before downloading)
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(url)
+                url_filename = unquote(Path(parsed.path).name)
+                # Remove query parameters
+                if '?' in url_filename:
+                    url_filename = url_filename.split('?')[0]
+                # Extract extension
+                file_extension = None
+                if '.' in url_filename:
+                    file_extension = '.' + url_filename.rsplit('.', 1)[1]
+
+                # Default to .mp3 if no extension found
+                if not file_extension or not file_extension.lower().endswith(('.mp3', '.m4a', '.mp4', '.aac')):
+                    file_extension = '.mp3'
+
+                # Build filename with date prefix and episode title
+                if episode_date and episode_title:
+                    # Parse date and format as YYYY-MM-DD
+                    from datetime import datetime
+                    try:
+                        date_obj = datetime.fromisoformat(episode_date.replace('Z', '+00:00'))
+                        date_prefix = date_obj.strftime('%Y-%m-%d')
+                    except (ValueError, AttributeError):
+                        date_prefix = None
+
+                    if date_prefix:
+                        # Sanitize episode title for filename
+                        import re
+                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                        filename = f"{date_prefix} - {safe_title}{file_extension}"
+                    else:
+                        # No valid date, use title only
+                        import re
+                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                        filename = f"{safe_title}{file_extension}"
+                elif episode_title:
+                    # No date, use title only
+                    import re
+                    safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                    filename = f"{safe_title}{file_extension}"
+                else:
+                    # Fallback to URL-based filename
+                    filename = url_filename
+                    if not filename.endswith(('.mp3', '.m4a', '.mp4', '.aac')):
+                        filename += file_extension
+
+                # Save to podcast-specific directory
+                filepath = output_dir / filename
+
+                # Check if file already exists (using pre-cached set) BEFORE downloading
+                if filename in existing_files:
+                    await send_log(f"[Episode {url_index}/{len(request.urls)}] File already exists, skipping: {filename}", "warning")
+                    logger.info(f"Podcast episode already exists: {filepath}")
+
+                    # Track skipped episode
+                    if current_downloading_item:
+                        with queue_lock:
+                            current_downloading_item.progress_current = url_index
+                            current_downloading_item.skipped_count += 1
+                        await broadcast_queue_update()
+
+                    continue
+
+                # File doesn't exist, download it now
+                await send_log(f"[Episode {url_index}/{len(request.urls)}] Downloading: {url}")
+                logger.info(f"Starting podcast download for URL: {url}")
+
+                # Simple HTTP download
+                async with httpx.AsyncClient(follow_redirects=True, timeout=300.0) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+
+                    with open(filepath, 'wb') as f:
+                        f.write(response.content)
+
+                # Add to cache so subsequent checks are fast
+                existing_files.add(filename)
+
+                await send_log(f"Downloaded: {filename}", "success")
+                logger.info(f"Podcast episode saved to: {filepath}")
+
+                # Update progress
+                if current_downloading_item:
+                    with queue_lock:
+                        current_downloading_item.progress_current = url_index
+                        current_downloading_item.success_count += 1
+                    await broadcast_queue_update()
+
+            except Exception as e:
+                await send_log(f"Failed to download episode: {str(e)}", "error")
+                logger.error(f"Podcast download error: {e}")
+
+                # Track failed episode
+                if current_downloading_item:
+                    with queue_lock:
+                        current_downloading_item.failed_count += 1
+                    await broadcast_queue_update()
+
+                continue
+
+        await send_log("All podcast downloads completed", "success")
+        await websocket.send_json({"type": "complete"})
+
+    except Exception as e:
+        logger.error(f"Podcast download session failed: {e}")
+        await send_log(f"Download failed: {str(e)}", "error")
+        await websocket.send_json({"type": "complete"})
 
 
 async def run_download_session(session_id: str, session: dict, websocket: WebSocket):
@@ -5752,6 +6602,14 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
     logger.info(f"run_download_session called with session_id={session_id}")
     logger.info(f"request.urls = {request.urls}")
     logger.info(f"len(request.urls) = {len(request.urls) if request.urls else 'None'}")
+
+    # NEW: Detect if URLs are podcasts (direct audio) or Apple Music URLs
+    if request.urls and all(is_direct_audio_url(url) for url in request.urls):
+        logger.info("Detected podcast URLs - routing to simple HTTP downloader")
+        return await download_podcast_episodes(session_id, session, websocket)
+
+    # Continue with Apple Music download flow for music.apple.com URLs
+    logger.info("Detected Apple Music URLs - routing to standard downloader")
 
     async def send_log(message: str, level: str = "info"):
         """Send a log message via WebSocket and to logger."""
@@ -5782,9 +6640,6 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         retry_delay = getattr(request, 'retry_delay', 60) if enable_retry_delay else 0
         song_delay = getattr(request, 'song_delay', 0.0) if enable_retry_delay else 0.0
         queue_item_delay = getattr(request, 'queue_item_delay', 0.0) if enable_retry_delay else 0.0
-
-        # Track if any download failed after retries
-        any_failed = False
 
         # Initialize API - handle empty strings and expand ~ paths
         cookies_path = request.cookies_path
@@ -5879,6 +6734,7 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             save_cover=not request.no_cover,
             cover_size=request.cover_size or 1200,
             cover_format=cover_format,
+            save_playlist=request.save_playlist,
         )
 
         song_downloader = AppleMusicSongDownloader(
@@ -5914,6 +6770,18 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         logger.info(f"request.urls value: {request.urls}")
         await send_log(f"Processing {len(request.urls)} URL(s)...")
 
+        # Set initial progress tracking based on whether we're downloading multiple URLs
+        # For multi-URL downloads (like discographies), track at URL level
+        # For single URL downloads, track at track level
+        use_url_level_progress = len(request.urls) > 1
+
+        if use_url_level_progress and current_downloading_item:
+            # Initialize progress for multi-URL download
+            with queue_lock:
+                current_downloading_item.progress_total = len(request.urls)
+                current_downloading_item.progress_current = 0
+            await broadcast_queue_update()
+
         # Process each URL
         logger.info(f"Entering URL processing loop with {len(request.urls)} URLs")
         for url_index, url in enumerate(request.urls, 1):
@@ -5925,6 +6793,12 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
 
             await send_log(f"[URL {url_index}/{len(request.urls)}] Processing: {url}")
             logger.info(f"After send_log, about to get URL info for: {url}")
+
+            # Update progress for multi-URL downloads at URL level
+            if use_url_level_progress and current_downloading_item:
+                with queue_lock:
+                    current_downloading_item.progress_current = url_index - 1
+                await broadcast_queue_update()
 
             try:
                 # Get URL info
@@ -5950,12 +6824,16 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                 await send_log(f"Found {len(download_queue)} track(s) to download", "success")
                 logger.info(f"About to download {len(download_queue)} tracks")
 
-                # Update queue item total progress
-                if current_downloading_item:
+                # Update queue item total progress for single URL downloads only
+                # For multi-URL downloads, we already set this at the URL level
+                if not use_url_level_progress and current_downloading_item:
                     with queue_lock:
                         current_downloading_item.progress_total = len(download_queue)
                         current_downloading_item.progress_current = 0
                     await broadcast_queue_update()
+
+                # Track individual download results for summary
+                download_results = []
 
                 # Download each item
                 for download_index, download_item in enumerate(download_queue, 1):
@@ -5973,15 +6851,16 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
 
                     await send_log(f"[Track {download_index}/{len(download_queue)}] Downloading: {media_title}")
 
-                    # Update queue item progress
-                    if current_downloading_item:
+                    # Update queue item progress only for single URL downloads
+                    # For multi-URL downloads, progress is tracked at URL level
+                    if not use_url_level_progress and current_downloading_item:
                         with queue_lock:
                             current_downloading_item.progress_current = download_index
                         await broadcast_queue_update()
 
                     # Use retry wrapper instead of direct download
                     try:
-                        success = await download_with_retry(
+                        result = await download_with_retry(
                             downloader=downloader,
                             download_item=download_item,
                             max_retries=max_retries,
@@ -5990,14 +6869,34 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                             session_id=session_id
                         )
 
-                        if success:
+                        # Store result for final summary
+                        download_results.append(result)
+
+                        # Track statistics for multi-URL downloads
+                        if use_url_level_progress and current_downloading_item:
+                            with queue_lock:
+                                if result == "success":
+                                    current_downloading_item.success_count += 1
+                                elif result == "skipped":
+                                    current_downloading_item.skipped_count += 1
+                                elif result == "failed":
+                                    current_downloading_item.failed_count += 1
+                            await broadcast_queue_update()
+
+                        if result == "success":
                             await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
+                        elif result == "skipped":
+                            await send_log(f"[Track {download_index}/{len(download_queue)}] Skipped: {media_title}", "info")
                         else:
-                            any_failed = True
                             await send_log(f"[Track {download_index}/{len(download_queue)}] Failed after retries: {media_title}", "error")
 
                     except ExecutableNotFound as e:
-                        # Missing executable - raise DependencyMissing to mark as failed but continue queue
+                        # Missing executable - track as failed and raise DependencyMissing
+                        if use_url_level_progress and current_downloading_item:
+                            with queue_lock:
+                                current_downloading_item.failed_count += 1
+                            await broadcast_queue_update()
+
                         error_msg = str(e)
                         if "mp4decrypt" in error_msg.lower():
                             await send_log(f"[Track {download_index}/{len(download_queue)}] Failed: mp4decrypt dependency missing", "error")
@@ -6024,12 +6923,45 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                 await send_log("No download queue available, skipping URL", "warning")
                 continue
 
-        # If any download failed after retries, raise error to trigger queue pause
-        if any_failed:
-            raise Exception(f"One or more downloads failed after {max_retries + 1} attempts")
+            # Update progress after successfully completing this URL (for multi-URL downloads)
+            if use_url_level_progress and current_downloading_item:
+                with queue_lock:
+                    current_downloading_item.progress_current = url_index
+                await broadcast_queue_update()
 
-        await send_log("All downloads completed!", "success")
+        # Build completion message with counters
+        success_count = sum(1 for r in download_results if r == "success")
+        skipped_count = sum(1 for r in download_results if r == "skipped")
+        failed_count = sum(1 for r in download_results if r == "failed")
+        total_items = len(download_results)
+
+        # Generate detailed summary message
+        summary_parts = []
+        if success_count > 0:
+            summary_parts.append(f"{success_count} successful")
+        if skipped_count > 0:
+            summary_parts.append(f"{skipped_count} skipped")
+        if failed_count > 0:
+            summary_parts.append(f"{failed_count} failed")
+
+        if summary_parts:
+            summary = f"Download complete: {', '.join(summary_parts)}"
+        else:
+            summary = "Download complete: no items processed"
+
+        # Determine message level based on results
+        if failed_count == total_items and total_items > 0:
+            # All failed - error
+            await send_log(summary, "error")
+        elif failed_count > 0:
+            # Partial failure - warning
+            await send_log(summary, "warning")
+        else:
+            # All successful or skipped - success
+            await send_log(summary, "success")
+
         await websocket.send_json({"type": "complete"})
+        return summary  # Return summary for queue UI display
 
     except Exception as e:
         logger.error(f"Download session error: {e}", exc_info=True)
