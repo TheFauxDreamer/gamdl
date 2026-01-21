@@ -6470,123 +6470,109 @@ async def download_podcast_episodes(session_id: str, session: dict, websocket: W
                 await send_log("Download cancelled by user", "warning")
                 break
 
-            await send_log(f"[Episode {url_index}/{len(request.urls)}] Downloading: {url}")
-
             try:
+                # Get episode metadata for this URL (for bulk downloads)
+                episode_title = None
+                episode_date = None
+
+                if request.episode_metadata and len(request.episode_metadata) >= url_index:
+                    # Bulk download: get metadata for current episode (url_index is 1-based)
+                    metadata = request.episode_metadata[url_index - 1]
+                    episode_title = metadata.get('title')
+                    episode_date = metadata.get('date')
+                else:
+                    # Single episode download: use request fields
+                    episode_title = request.episode_title
+                    episode_date = request.episode_date
+
+                # Extract file extension from URL (before downloading)
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(url)
+                url_filename = unquote(Path(parsed.path).name)
+                # Remove query parameters
+                if '?' in url_filename:
+                    url_filename = url_filename.split('?')[0]
+                # Extract extension
+                file_extension = None
+                if '.' in url_filename:
+                    file_extension = '.' + url_filename.rsplit('.', 1)[1]
+
+                # Default to .mp3 if no extension found
+                if not file_extension or not file_extension.lower().endswith(('.mp3', '.m4a', '.mp4', '.aac')):
+                    file_extension = '.mp3'
+
+                # Build filename with date prefix and episode title
+                if episode_date and episode_title:
+                    # Parse date and format as YYYY-MM-DD
+                    from datetime import datetime
+                    try:
+                        date_obj = datetime.fromisoformat(episode_date.replace('Z', '+00:00'))
+                        date_prefix = date_obj.strftime('%Y-%m-%d')
+                    except (ValueError, AttributeError):
+                        date_prefix = None
+
+                    if date_prefix:
+                        # Sanitize episode title for filename
+                        import re
+                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                        filename = f"{date_prefix} - {safe_title}{file_extension}"
+                    else:
+                        # No valid date, use title only
+                        import re
+                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                        filename = f"{safe_title}{file_extension}"
+                elif episode_title:
+                    # No date, use title only
+                    import re
+                    safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
+                    filename = f"{safe_title}{file_extension}"
+                else:
+                    # Fallback to URL-based filename
+                    filename = url_filename
+                    if not filename.endswith(('.mp3', '.m4a', '.mp4', '.aac')):
+                        filename += file_extension
+
+                # Save to podcast-specific directory
+                filepath = output_dir / filename
+
+                # Check if file already exists (using pre-cached set) BEFORE downloading
+                if filename in existing_files:
+                    await send_log(f"[Episode {url_index}/{len(request.urls)}] File already exists, skipping: {filename}", "warning")
+                    logger.info(f"Podcast episode already exists: {filepath}")
+
+                    # Track skipped episode
+                    if current_downloading_item:
+                        with queue_lock:
+                            current_downloading_item.progress_current = url_index
+                            current_downloading_item.skipped_count += 1
+                        await broadcast_queue_update()
+
+                    continue
+
+                # File doesn't exist, download it now
+                await send_log(f"[Episode {url_index}/{len(request.urls)}] Downloading: {url}")
+                logger.info(f"Starting podcast download for URL: {url}")
+
                 # Simple HTTP download
                 async with httpx.AsyncClient(follow_redirects=True, timeout=300.0) as client:
                     response = await client.get(url)
                     response.raise_for_status()
 
-                    # Extract file extension from URL or Content-Disposition header
-                    file_extension = None
-                    if "Content-Disposition" in response.headers:
-                        import re
-                        disposition = response.headers["Content-Disposition"]
-                        match = re.findall(r'filename="?([^"]+)"?', disposition)
-                        if match:
-                            original_filename = match[0]
-                            # Extract extension from original filename
-                            if '.' in original_filename:
-                                file_extension = '.' + original_filename.rsplit('.', 1)[1]
-
-                    if not file_extension:
-                        # Extract extension from URL
-                        from urllib.parse import urlparse, unquote
-                        parsed = urlparse(url)
-                        url_filename = unquote(Path(parsed.path).name)
-                        # Remove query parameters
-                        if '?' in url_filename:
-                            url_filename = url_filename.split('?')[0]
-                        # Extract extension
-                        if '.' in url_filename:
-                            file_extension = '.' + url_filename.rsplit('.', 1)[1]
-
-                    # Default to .mp3 if no extension found
-                    if not file_extension or not file_extension.lower().endswith(('.mp3', '.m4a', '.mp4', '.aac')):
-                        file_extension = '.mp3'
-
-                    # Get episode metadata for this URL (for bulk downloads)
-                    episode_title = None
-                    episode_date = None
-
-                    if request.episode_metadata and len(request.episode_metadata) >= url_index:
-                        # Bulk download: get metadata for current episode (url_index is 1-based)
-                        metadata = request.episode_metadata[url_index - 1]
-                        episode_title = metadata.get('title')
-                        episode_date = metadata.get('date')
-                    else:
-                        # Single episode download: use request fields
-                        episode_title = request.episode_title
-                        episode_date = request.episode_date
-
-                    # Build filename with date prefix and episode title
-                    if episode_date and episode_title:
-                        # Parse date and format as YYYY-MM-DD
-                        from datetime import datetime
-                        try:
-                            date_obj = datetime.fromisoformat(episode_date.replace('Z', '+00:00'))
-                            date_prefix = date_obj.strftime('%Y-%m-%d')
-                        except (ValueError, AttributeError):
-                            date_prefix = None
-
-                        if date_prefix:
-                            # Sanitize episode title for filename
-                            import re
-                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
-                            filename = f"{date_prefix} - {safe_title}{file_extension}"
-                        else:
-                            # No valid date, use title only
-                            import re
-                            safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
-                            filename = f"{safe_title}{file_extension}"
-                    elif episode_title:
-                        # No date, use title only
-                        import re
-                        safe_title = re.sub(r'[\\/:*?"<>|]', '_', episode_title)
-                        filename = f"{safe_title}{file_extension}"
-                    else:
-                        # Fallback to URL-based filename
-                        from urllib.parse import urlparse, unquote
-                        parsed = urlparse(url)
-                        filename = unquote(Path(parsed.path).name)
-                        if '?' in filename:
-                            filename = filename.split('?')[0]
-                        if not filename.endswith(('.mp3', '.m4a', '.mp4', '.aac')):
-                            filename += file_extension
-
-                    # Save to podcast-specific directory
-                    filepath = output_dir / filename
-
-                    # Check if file already exists (using pre-cached set)
-                    if filename in existing_files:
-                        await send_log(f"File already exists, skipping: {filename}", "warning")
-                        logger.info(f"Podcast episode already exists: {filepath}")
-
-                        # Track skipped episode
-                        if current_downloading_item:
-                            with queue_lock:
-                                current_downloading_item.progress_current = url_index
-                                current_downloading_item.skipped_count += 1
-                            await broadcast_queue_update()
-
-                        continue
-
                     with open(filepath, 'wb') as f:
                         f.write(response.content)
 
-                    # Add to cache so subsequent checks are fast
-                    existing_files.add(filename)
+                # Add to cache so subsequent checks are fast
+                existing_files.add(filename)
 
-                    await send_log(f"Downloaded: {filename}", "success")
-                    logger.info(f"Podcast episode saved to: {filepath}")
+                await send_log(f"Downloaded: {filename}", "success")
+                logger.info(f"Podcast episode saved to: {filepath}")
 
-                    # Update progress
-                    if current_downloading_item:
-                        with queue_lock:
-                            current_downloading_item.progress_current = url_index
-                            current_downloading_item.success_count += 1
-                        await broadcast_queue_update()
+                # Update progress
+                if current_downloading_item:
+                    with queue_lock:
+                        current_downloading_item.progress_current = url_index
+                        current_downloading_item.success_count += 1
+                    await broadcast_queue_update()
 
             except Exception as e:
                 await send_log(f"Failed to download episode: {str(e)}", "error")
