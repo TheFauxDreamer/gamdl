@@ -1487,10 +1487,6 @@ async def root():
                 0% { transform: rotate(0deg); }
                 100% { transform: rotate(360deg); }
             }
-            #settingsView h2 {
-                margin-top: 0;
-                margin-bottom: 5px;
-            }
             #settingsView h3 {
                 margin-top: 30px;
                 margin-bottom: 15px;
@@ -2549,6 +2545,8 @@ async def root():
 
             <!-- Library Browser View -->
             <div id="libraryView" class="view-section active">
+                <h2>Library Browser</h2>
+
                 <div id="apiInitError" class="library-error" style="display:none;"></div>
                 <div id="libraryError" class="library-error" style="display:none;"></div>
 
@@ -2592,6 +2590,8 @@ async def root():
 
             <!-- URL Downloads View -->
             <div id="downloadsView" class="view-section">
+                <h2>URL Downloads</h2>
+
             <form id="downloadForm">
                 <div class="form-group">
                     <label for="urls">Apple Music URLs (one per line)</label>
@@ -2639,7 +2639,6 @@ async def root():
             <!-- Settings View -->
             <div id="settingsView" class="view-section">
                 <h2>Settings</h2>
-                <p class="subtitle">Configure paths and download options</p>
 
                 <h3>Paths</h3>
                 <div class="form-group">
@@ -2800,7 +2799,6 @@ async def root():
             <!-- Monitor View -->
             <div id="monitorView" class="view-section">
                 <h2>Playlist Monitor</h2>
-                <p class="subtitle">Automatically download new additions to a monitored playlist</p>
 
                 <!-- Playlist Selector -->
                 <div class="playlist-selector-section">
