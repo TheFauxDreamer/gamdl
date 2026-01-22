@@ -154,6 +154,7 @@ class DownloadRequest(BaseModel):
 
     # Queue behavior
     continue_on_error: bool = False  # Continue queue processing even if items fail
+    from_monitor: bool = False  # Track if this download is from playlist monitoring
 
     # Display customization (optional)
     display_title: Optional[str] = None  # Custom display name for queue
@@ -317,7 +318,7 @@ def save_monitor_config(config: dict):
         logger.error(f"Failed to save monitor config: {e}")
 
 
-def log_monitor_event(event_type: str, message: str, track_ids: list = None):
+def log_monitor_event(event_type: str, message: str, track_ids: list = None, tracks: list = None, track_count: int = None):
     """Add event to activity log (keep last 100)."""
     try:
         config = load_monitor_config()
@@ -329,6 +330,10 @@ def log_monitor_event(event_type: str, message: str, track_ids: list = None):
         }
         if track_ids:
             event["track_ids"] = track_ids
+        if tracks:
+            event["tracks"] = tracks
+        if track_count:
+            event["track_count"] = track_count
 
         config.setdefault('activity_log', []).insert(0, event)
         config['activity_log'] = config['activity_log'][:100]  # Keep last 100
@@ -431,6 +436,9 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
 
     api = app.state.api
 
+    # Collect track details for activity log (first 3 tracks)
+    track_details = []
+
     # Fetch metadata and queue each track
     for track_id in new_track_ids:
         try:
@@ -447,6 +455,10 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
                 artist_name = song_attrs.get("artistName", "Unknown Artist")
                 display_title = f"{song_title} - {artist_name}"
                 logger.info(f"Queueing monitored track: {display_title}")
+
+                # Collect track details for activity log (limit to first 3)
+                if len(track_details) < 3:
+                    track_details.append({"title": song_title, "artist": artist_name})
             else:
                 # Metadata fetch returned empty
                 display_title = f"Monitored: {track_id}"
@@ -500,6 +512,7 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
             song_delay=config.get('song_delay', 0.0),
             queue_item_delay=config.get('queue_item_delay', 0.0),
             continue_on_error=config.get('continue_on_error', False),
+            from_monitor=True,
         )
 
         # Add to queue with proper display info
@@ -510,8 +523,14 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
         except Exception as e:
             logger.error(f"Failed to add track {track_id} to queue: {e}")
 
-    # Log event
-    log_monitor_event('new_tracks', f'Found {len(new_track_ids)} new tracks', list(new_track_ids))
+    # Log event with track details
+    log_monitor_event(
+        'new_tracks',
+        f'Found {len(new_track_ids)} new tracks',
+        track_ids=list(new_track_ids),
+        tracks=track_details if track_details else None,
+        track_count=len(new_track_ids)
+    )
 
 
 async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
@@ -922,6 +941,10 @@ async def process_queue():
                         next_item.completed_at = datetime.now()
                         next_item.error_message = summary_message  # Store summary for queue UI
 
+                    # Log to monitor activity if this was from monitoring
+                    if getattr(next_item.download_request, 'from_monitor', False):
+                        log_monitor_event('downloaded', f'Downloaded: {next_item.display_title}')
+
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
                         await asyncio.sleep(queue_item_delay)
@@ -994,6 +1017,10 @@ async def process_queue():
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
                         next_item.error_message = summary_message  # Store summary for queue UI
+
+                    # Log to monitor activity if this was from monitoring
+                    if getattr(next_item.download_request, 'from_monitor', False):
+                        log_monitor_event('downloaded', f'Downloaded: {next_item.display_title}')
 
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
@@ -1098,28 +1125,111 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
         <title>gamdl Advanced Web UI</title>
         <style>
+            :root {
+                --primary-color: #007aff;
+                --primary-color-hover: #0051d5;
+                --primary-color-light: rgba(0, 122, 255, 0.1);
+                --primary-color-shadow: rgba(0, 122, 255, 0.4);
+
+                /* Light mode colors (default) */
+                --bg-primary: #ffffff;
+                --bg-secondary: #f5f5f5;
+                --bg-tertiary: #f9f9f9;
+                --bg-hover: #f0f0f0;
+                --bg-input: #ffffff;
+
+                --text-primary: #333333;
+                --text-secondary: #666666;
+                --text-tertiary: #999999;
+                --text-disabled: #cccccc;
+
+                --border-primary: #e0e0e0;
+                --border-secondary: #dddddd;
+                --border-input: #dddddd;
+
+                --card-bg: #ffffff;
+                --card-hover: #f9f9f9;
+
+                --success-color: #4CAF50;
+                --warning-color: #ff9500;
+                --error-color: #ff3b30;
+
+                --scrollbar-thumb: #c7c7cc;
+                --scrollbar-thumb-hover: #b0b0b5;
+
+                --shadow-sm: rgba(0, 0, 0, 0.1);
+                --shadow-md: rgba(0, 0, 0, 0.15);
+                --shadow-lg: rgba(0, 0, 0, 0.3);
+
+                --overlay: rgba(0, 0, 0, 0.5);
+            }
+
+            /* Dark mode colors */
+            [data-theme="dark"] {
+                --bg-primary: #2d2d2d;
+                --bg-secondary: #1a1a1a;
+                --bg-tertiary: #3a3a3a;
+                --bg-hover: #404040;
+                --bg-input: #3f3f3f;
+
+                --text-primary: #e8e8e8;
+                --text-secondary: #b0b0b0;
+                --text-tertiary: #808080;
+                --text-disabled: #555555;
+
+                --border-primary: #444444;
+                --border-secondary: #555555;
+                --border-input: #666666;
+
+                --card-bg: #2e2e2e;
+                --card-hover: #3f3f3f;
+
+                --success-color: #66BB6A;
+                --warning-color: #ff9500;
+                --error-color: #ff6b6b;
+
+                --scrollbar-thumb: #666666;
+                --scrollbar-thumb-hover: #888888;
+
+                --shadow-sm: rgba(0, 0, 0, 0.3);
+                --shadow-md: rgba(0, 0, 0, 0.4);
+                --shadow-lg: rgba(0, 0, 0, 0.6);
+
+                --overlay: rgba(0, 0, 0, 0.8);
+            }
+
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
                 max-width: 1200px;
                 margin: 0 auto;
                 padding: 20px;
-                background: #f5f5f5;
+                background: var(--bg-secondary);
             }
             .container {
-                background: white;
+                background: var(--bg-primary);
                 padding: 30px;
                 border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                box-shadow: 0 2px 4px var(--shadow-sm);
             }
             h1 {
-                color: #333;
-                margin-bottom: 10px;
+                color: var(--text-primary);
+                margin-bottom: 5px;
+                font-size: 24px;
+            }
+            h2 {
+                color: var(--text-primary);
+            }
+            h3 {
+                color: var(--text-primary);
             }
             .subtitle {
-                color: #666;
-                margin-bottom: 30px;
+                color: var(--text-secondary);
+                margin-bottom: 20px;
+                font-size: 14px;
             }
             .form-group {
                 margin-bottom: 20px;
@@ -1128,37 +1238,52 @@ async def root():
                 display: block;
                 margin-bottom: 5px;
                 font-weight: 500;
-                color: #333;
+                color: var(--text-primary);
             }
             .form-group.checkbox-group {
                 margin-bottom: 12px;
             }
             .form-group.checkbox-group label {
                 display: flex;
-                align-items: center;
+                align-items: flex-start;
                 gap: 8px;
                 cursor: pointer;
                 font-weight: 400;
+                flex-wrap: wrap;
             }
             .form-group.checkbox-group input[type="checkbox"] {
                 width: auto;
                 margin: 0;
                 cursor: pointer;
+                flex-shrink: 0;
+                accent-color: var(--primary-color);
+            }
+            .form-group.checkbox-group label span {
+                flex: 1;
+                min-width: 200px;
+            }
+            .form-group.checkbox-group label small {
+                display: block;
+                width: 100%;
+                margin-left: 28px;
+                margin-top: 4px;
             }
             input, textarea, select {
                 width: 100%;
                 padding: 10px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
                 font-size: 14px;
                 box-sizing: border-box;
+                background: var(--bg-input);
+                color: var(--text-primary);
             }
             textarea {
                 min-height: 100px;
                 font-family: monospace;
             }
             button {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
                 border: none;
                 padding: 12px 24px;
@@ -1172,7 +1297,7 @@ async def root():
                 background: #0051d5;
             }
             button:disabled {
-                background: #ccc;
+                background: var(--text-disabled);
                 cursor: not-allowed;
             }
             button.cancel {
@@ -1182,7 +1307,7 @@ async def root():
                 background: #d32f2f;
             }
             button.cancel:disabled {
-                background: #ccc;
+                background: var(--text-disabled);
             }
             .button-group {
                 display: flex;
@@ -1193,7 +1318,7 @@ async def root():
                 display: none;
                 margin-top: 30px;
                 padding: 20px;
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 4px;
             }
             .progress-container.active {
@@ -1227,7 +1352,7 @@ async def root():
                 align-items: center;
                 margin-bottom: 15px;
                 padding: 10px;
-                background: white;
+                background: var(--bg-primary);
                 border-radius: 4px;
             }
             .status-indicator {
@@ -1235,7 +1360,7 @@ async def root():
                 height: 12px;
                 border-radius: 50%;
                 margin-right: 10px;
-                background: #ccc;
+                background: var(--text-disabled);
             }
             .status-indicator.active {
                 background: #34c759;
@@ -1255,7 +1380,7 @@ async def root():
                 margin-bottom: 15px;
             }
             .stat-item {
-                background: white;
+                background: var(--bg-primary);
                 padding: 10px;
                 border-radius: 4px;
                 text-align: center;
@@ -1263,18 +1388,18 @@ async def root():
             .stat-value {
                 font-size: 24px;
                 font-weight: bold;
-                color: #007aff;
+                color: var(--primary-color);
             }
             .stat-label {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-top: 5px;
             }
             .collapsible {
                 margin-top: 20px;
             }
             .collapsible-header {
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 padding: 10px;
                 border-radius: 4px;
                 cursor: pointer;
@@ -1299,30 +1424,77 @@ async def root():
             /* Library Browser Styles */
             .nav-tabs {
                 display: flex;
-                gap: 10px;
+                gap: 4px;
                 margin-bottom: 20px;
-                border-bottom: 2px solid #e0e0e0;
-                padding-bottom: 0;
+                padding: 4px;
+                background: var(--bg-hover);
+                border-radius: 8px;
+                overflow-x: auto;
+                overflow-y: hidden;
+                flex-wrap: nowrap;
+                scroll-behavior: smooth;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-x;
+                width: fit-content;
+                max-width: 100%;
+            }
+            /* Scrollbar styling for desktop */
+            .nav-tabs::-webkit-scrollbar {
+                height: 4px;
+            }
+            .nav-tabs::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            .nav-tabs::-webkit-scrollbar-thumb {
+                background: var(--scrollbar-thumb);
+                border-radius: 2px;
+            }
+            .nav-tabs::-webkit-scrollbar-thumb:hover {
+                background: var(--scrollbar-thumb-hover);
             }
             .nav-tab {
-                padding: 10px 20px;
-                background: none;
+                padding: 8px 16px;
+                background: transparent;
                 border: none;
+                border-radius: 6px;
                 cursor: pointer;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 500;
-                color: #666;
-                border-bottom: 2px solid transparent;
-                margin-bottom: -2px;
-                transition: all 0.2s;
+                color: var(--text-secondary);
+                transition: all 0.2s ease-out;
+                white-space: nowrap;
+                flex-shrink: 0;
+                -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
             }
-            .nav-tab:hover {
-                color: #007aff;
-                background: #f0f0f0;
+            /* Desktop-specific hover - only show on non-touch devices */
+            @media (hover: hover) and (pointer: fine) {
+                .nav-tab:hover {
+                    color: var(--primary-color);
+                }
+                .nav-tab:not(.active):hover {
+                    background: rgba(0, 122, 255, 0.1);
+                }
+            }
+            .nav-tab:not(.active):active {
+                background: transparent;
+            }
+            .nav-tab:not(.active):focus,
+            .nav-tab:not(.active):focus-visible {
+                background: transparent;
+                outline: none;
             }
             .nav-tab.active {
-                color: #007aff;
-                border-bottom-color: #007aff;
+                background: var(--primary-color);
+                color: #ffffff;
+                font-weight: 600;
+            }
+            .nav-tab.active:hover {
+                background: var(--primary-color);
+                color: #ffffff;
+            }
+            .nav-tab.active:active {
+                background: #0051d5;
             }
             .tab-content {
                 display: none;
@@ -1337,7 +1509,7 @@ async def root():
                 margin: 20px 0;
             }
             .library-item {
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 8px;
                 padding: 10px;
                 text-align: center;
@@ -1346,7 +1518,7 @@ async def root():
             }
             .library-item:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+                box-shadow: 0 4px 8px var(--shadow-md);
             }
             .library-item-artwork {
                 position: relative;
@@ -1373,10 +1545,11 @@ async def root():
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+                color: var(--text-primary);
             }
             .library-item-subtitle {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 8px;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1399,21 +1572,21 @@ async def root():
                 font-size: 12px;
             }
             .library-item .btn-primary {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
-                border: 1px solid #007aff;
+                border: 1px solid var(--primary-color);
             }
             .library-item .btn-primary:hover {
                 background: #0056b3;
                 border-color: #0056b3;
             }
             .library-item .btn-secondary {
-                background: white;
-                color: #007aff;
-                border: 1px solid #007aff;
+                background: var(--bg-primary);
+                color: var(--primary-color);
+                border: 1px solid var(--primary-color);
             }
             .library-item .btn-secondary:hover {
-                background: #f0f0f0;
+                background: var(--bg-hover);
             }
             .load-more {
                 text-align: center;
@@ -1425,7 +1598,7 @@ async def root():
             .library-empty {
                 text-align: center;
                 padding: 40px;
-                color: #999;
+                color: var(--text-tertiary);
             }
             .library-error {
                 background: #fff3cd;
@@ -1444,7 +1617,7 @@ async def root():
             .loading {
                 text-align: center;
                 padding: 40px;
-                color: #666;
+                color: var(--text-secondary);
             }
 
             .spinner {
@@ -1452,7 +1625,7 @@ async def root():
                 width: 40px;
                 height: 40px;
                 border: 4px solid #f3f3f3;
-                border-top: 4px solid #007aff;
+                border-top: 4px solid var(--primary-color);
                 border-radius: 50%;
                 animation: spin 1s linear infinite;
                 margin-bottom: 15px;
@@ -1462,16 +1635,12 @@ async def root():
                 0% { transform: rotate(0deg); }
                 100% { transform: rotate(360deg); }
             }
-            #settingsView h2 {
-                margin-top: 0;
-                margin-bottom: 5px;
-            }
             #settingsView h3 {
                 margin-top: 30px;
                 margin-bottom: 15px;
-                color: #333;
+                color: var(--text-primary);
                 font-size: 16px;
-                border-bottom: 2px solid #e0e0e0;
+                border-bottom: 2px solid var(--border-primary);
                 padding-bottom: 8px;
             }
             #settingsView h3:first-of-type {
@@ -1480,7 +1649,7 @@ async def root():
             #settingsView small {
                 display: block;
                 margin-top: 5px;
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 12px;
             }
 
@@ -1491,8 +1660,8 @@ async def root():
                 top: 0;
                 bottom: 0;
                 width: 350px;
-                background: white;
-                box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+                background: var(--bg-primary);
+                box-shadow: -2px 0 10px var(--shadow-sm);
                 transform: translateX(0);
                 transition: transform 0.3s ease;
                 z-index: 1000;
@@ -1508,29 +1677,30 @@ async def root():
                 justify-content: space-between;
                 align-items: center;
                 padding: 15px;
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
-                border-bottom: 1px solid #0051d5;
+                border-bottom: 1px solid var(--primary-color-hover);
             }
             .queue-header h3 {
                 margin: 0;
                 font-size: 18px;
                 font-weight: 600;
+                color: white;
             }
             .queue-controls {
                 display: flex;
                 gap: 10px;
                 padding: 10px;
-                background: #f9f9f9;
-                border-bottom: 1px solid #e0e0e0;
+                background: var(--bg-tertiary);
+                border-bottom: 1px solid var(--border-primary);
             }
             .queue-control-btn {
                 flex: 1;
                 padding: 8px 12px;
                 font-size: 13px;
-                background: white;
-                color: #333;
-                border: 1px solid #ddd;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
                 cursor: pointer;
                 transition: all 0.2s;
@@ -1543,8 +1713,8 @@ async def root():
                 flex-shrink: 0;
             }
             .queue-control-btn:hover {
-                background: #f0f0f0;
-                border-color: #007aff;
+                background: var(--bg-hover);
+                border-color: var(--primary-color);
             }
             .queue-control-btn.clear-btn {
                 color: #ff3b30;
@@ -1562,8 +1732,8 @@ async def root():
                 display: flex;
                 justify-content: space-around;
                 padding: 10px;
-                background: #f9f9f9;
-                border-bottom: 1px solid #e0e0e0;
+                background: var(--bg-tertiary);
+                border-bottom: 1px solid var(--border-primary);
             }
             .queue-stat {
                 display: flex;
@@ -1572,13 +1742,13 @@ async def root():
                 font-size: 12px;
             }
             .queue-stat-label {
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 4px;
             }
             .queue-stat-value {
                 font-size: 20px;
                 font-weight: bold;
-                color: #007aff;
+                color: var(--primary-color);
             }
             .queue-list {
                 flex: 1;
@@ -1586,18 +1756,18 @@ async def root():
                 padding: 10px;
             }
             .queue-item {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 4px;
                 padding: 8px 10px;
                 margin-bottom: 6px;
                 transition: all 0.2s;
             }
             .queue-item:hover {
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                box-shadow: 0 2px 8px var(--shadow-sm);
             }
             .queue-item.queued {
-                border-left: 4px solid #007aff;
+                border-left: 4px solid var(--primary-color);
             }
             .queue-item.downloading {
                 border-left: 4px solid #34c759;
@@ -1624,7 +1794,7 @@ async def root():
             .queue-item-title {
                 font-weight: 600;
                 font-size: 13px;
-                color: #333;
+                color: var(--text-primary);
                 margin-bottom: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1633,9 +1803,9 @@ async def root():
             }
             .queue-item-type {
                 font-size: 11px;
-                color: #666;
+                color: var(--text-secondary);
                 text-transform: uppercase;
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 padding: 2px 6px;
                 border-radius: 3px;
                 margin-left: 8px;
@@ -1645,12 +1815,12 @@ async def root():
                 align-items: center;
                 gap: 8px;
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 8px;
             }
             .queue-item-stats {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-top: 4px;
                 padding: 4px 0;
             }
@@ -1661,7 +1831,7 @@ async def root():
                 display: inline-block;
             }
             .queue-item-status-icon.queued {
-                background: #007aff;
+                background: var(--primary-color);
             }
             .queue-item-status-icon.downloading {
                 background: #34c759;
@@ -1680,14 +1850,14 @@ async def root():
             .queue-item-btn {
                 padding: 4px 8px;
                 font-size: 12px;
-                border: 1px solid #ddd;
-                background: white;
+                border: 1px solid var(--border-input);
+                background: var(--bg-primary);
                 border-radius: 4px;
                 cursor: pointer;
                 transition: all 0.2s;
             }
             .queue-item-btn:hover {
-                background: #f0f0f0;
+                background: var(--bg-hover);
             }
             .queue-item-btn.remove {
                 color: #ff3b30;
@@ -1700,7 +1870,7 @@ async def root():
             .queue-empty {
                 text-align: center;
                 padding: 40px 20px;
-                color: #999;
+                color: var(--text-tertiary);
             }
             .queue-empty-icon {
                 font-size: 48px;
@@ -1719,7 +1889,7 @@ async def root():
             }
             .queue-item-info {
                 font-size: 10px;
-                color: #007aff;
+                color: var(--primary-color);
                 margin-bottom: 4px;
             }
             .queue-item-progress {
@@ -1741,9 +1911,9 @@ async def root():
             .queue-item-view {
                 padding: 4px 12px;
                 font-size: 12px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
-                background: white;
+                background: var(--bg-primary);
                 cursor: pointer;
                 transition: all 0.2s;
             }
@@ -1756,11 +1926,11 @@ async def root():
                 color: white;
             }
             .queue-item-view {
-                color: #007aff;
-                border-color: #007aff;
+                color: var(--primary-color);
+                border-color: var(--primary-color);
             }
             .queue-item-view:hover {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
             }
 
@@ -1776,14 +1946,14 @@ async def root():
                 flex: 1;
                 padding: 12px 16px;
                 font-size: 16px;
-                border: 2px solid #e0e0e0;
+                border: 2px solid var(--border-primary);
                 border-radius: 8px;
                 outline: none;
                 transition: border-color 0.2s;
             }
 
             .search-container input:focus {
-                border-color: #007aff;
+                border-color: var(--primary-color);
             }
 
             .search-container button {
@@ -1810,7 +1980,7 @@ async def root():
                 left: 0;
                 width: 100%;
                 height: 100%;
-                background: rgba(0, 0, 0, 0.5);
+                background: var(--overlay);
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -1818,14 +1988,14 @@ async def root():
             }
 
             .modal-content {
-                background: white;
+                background: var(--bg-primary);
                 border-radius: 12px;
                 width: 90%;
                 max-width: 1200px;
                 max-height: 90vh;
                 display: flex;
                 flex-direction: column;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                box-shadow: 0 8px 32px var(--shadow-lg);
             }
 
             .modal-header {
@@ -1833,7 +2003,7 @@ async def root():
                 justify-content: space-between;
                 align-items: center;
                 padding: 20px;
-                border-bottom: 1px solid #e0e0e0;
+                border-bottom: 1px solid var(--border-primary);
             }
 
             .modal-header h2 {
@@ -1846,7 +2016,7 @@ async def root():
                 border: none;
                 font-size: 32px;
                 cursor: pointer;
-                color: #666;
+                color: var(--text-secondary);
                 padding: 0;
                 width: 40px;
                 height: 40px;
@@ -1854,7 +2024,7 @@ async def root():
             }
 
             .modal-close:hover {
-                color: #333;
+                color: var(--text-primary);
             }
 
             .modal-body {
@@ -1868,7 +2038,7 @@ async def root():
                 justify-content: flex-end;
                 gap: 10px;
                 padding: 20px;
-                border-top: 1px solid #e0e0e0;
+                border-top: 1px solid var(--border-primary);
             }
 
             .artist-section {
@@ -1883,8 +2053,8 @@ async def root():
 
             /* Monitor View Styles */
             .monitor-card {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 8px;
                 padding: 20px;
                 margin-bottom: 20px;
@@ -1893,7 +2063,7 @@ async def root():
             .playlist-selector-section {
                 margin-bottom: 20px;
                 padding: 20px;
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 8px;
             }
 
@@ -1901,7 +2071,7 @@ async def root():
                 display: block;
                 margin-bottom: 10px;
                 font-weight: 600;
-                color: #333;
+                color: var(--text-primary);
             }
 
             .selector-controls {
@@ -1914,23 +2084,23 @@ async def root():
                 flex: 1;
                 padding: 10px 15px;
                 font-size: 14px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 6px;
-                background: white;
+                background: var(--bg-primary);
                 cursor: pointer;
                 min-width: 300px;
             }
 
             .playlist-dropdown:focus {
                 outline: none;
-                border-color: #007AFF;
-                box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px var(--primary-color-light);
             }
 
             .monitor-empty {
                 text-align: center;
                 padding: 40px 20px;
-                color: #666;
+                color: var(--text-secondary);
             }
 
             .monitor-active .monitor-header {
@@ -1999,6 +2169,19 @@ async def root():
                 transform: translateX(26px);
             }
 
+            .toggle-container {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .toggle-label {
+                font-size: 13px;
+                color: var(--text-secondary);
+                font-weight: 400;
+            }
+
             .monitor-stats {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2008,13 +2191,13 @@ async def root():
 
             .monitor-stats .stat {
                 padding: 10px;
-                background: #f5f5f5;
+                background: var(--bg-tertiary);
                 border-radius: 4px;
             }
 
             .monitor-stats .stat-label {
                 font-weight: 600;
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 13px;
             }
 
@@ -2022,12 +2205,12 @@ async def root():
                 display: block;
                 margin-top: 4px;
                 font-size: 16px;
-                color: #333;
+                color: var(--text-primary);
             }
 
             .activity-log-section {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 8px;
                 padding: 20px;
             }
@@ -2045,7 +2228,7 @@ async def root():
 
             .activity-empty {
                 text-align: center;
-                color: #999;
+                color: var(--text-tertiary);
                 padding: 20px;
             }
 
@@ -2094,11 +2277,132 @@ async def root():
             .activity-item .activity-message {
                 font-weight: 500;
                 margin-bottom: 4px;
+                color: var(--text-primary);
             }
 
             .activity-item .activity-time {
                 font-size: 12px;
-                color: #999;
+                color: var(--text-tertiary);
+            }
+
+            .activity-tracks {
+                margin-top: 8px;
+                padding-left: 4px;
+            }
+
+            .activity-track {
+                font-size: 13px;
+                color: var(--text-secondary);
+                line-height: 1.6;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .activity-track-more {
+                font-size: 13px;
+                color: var(--text-tertiary);
+                font-style: italic;
+                margin-top: 2px;
+            }
+
+            .color-theme-group {
+                margin-bottom: 30px;
+            }
+
+            .color-swatches {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+                gap: 12px;
+                margin-top: 15px;
+            }
+
+            .color-swatch {
+                background: #f5f5f5;
+                border: 2px solid transparent;
+                border-radius: 8px;
+                padding: 10px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                text-align: center;
+            }
+
+            .color-swatch:hover {
+                background: var(--bg-hover);
+                transform: translateY(-2px);
+            }
+
+            .color-swatch.active {
+                border-color: var(--text-primary);
+                background: var(--bg-primary);
+            }
+
+            .swatch-color {
+                width: 100%;
+                height: 40px;
+                border-radius: 6px;
+                margin-bottom: 8px;
+            }
+
+            .swatch-name {
+                font-size: 13px;
+                font-weight: 500;
+                color: var(--text-primary);
+            }
+
+            .dark-mode-group {
+                margin-bottom: 30px;
+            }
+
+            .dark-mode-options {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                margin-top: 15px;
+            }
+
+            .radio-option {
+                display: flex;
+                align-items: center;
+                padding: 15px;
+                background: var(--bg-tertiary);
+                border: 2px solid var(--border-primary);
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+
+            .radio-option:hover {
+                background: var(--bg-hover);
+                border-color: var(--primary-color);
+            }
+
+            .radio-option input[type="radio"] {
+                margin-right: 12px;
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
+            }
+
+            .radio-option input[type="radio"]:checked {
+                accent-color: var(--primary-color);
+            }
+
+            .radio-content {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .radio-label {
+                font-size: 15px;
+                font-weight: 500;
+                color: var(--text-primary);
+            }
+
+            .radio-description {
+                font-size: 13px;
+                color: var(--text-secondary);
             }
 
             .btn-danger {
@@ -2128,32 +2432,497 @@ async def root():
             .btn-secondary:hover {
                 background-color: #616161;
             }
+
+            /* ===================================
+               MOBILE RESPONSIVE STYLES
+               =================================== */
+
+            /* Floating Action Button (FAB) for Queue - Mobile Only */
+            #queueToggleFAB {
+                display: none; /* Hidden on desktop */
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                width: 56px;
+                height: 56px;
+                border-radius: 50%;
+                background: var(--primary-color);
+                color: white;
+                border: none;
+                padding: 0;
+                box-shadow: 0 4px 12px var(--primary-color-shadow);
+                cursor: pointer;
+                z-index: 998;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: transform 0.2s, box-shadow 0.2s;
+            }
+
+            #queueToggleFAB:active {
+                transform: scale(0.95);
+            }
+
+            #queueToggleFAB .queue-badge {
+                position: absolute;
+                top: -4px;
+                right: -4px;
+                background: #ff3b30;
+                color: white;
+                border-radius: 12px;
+                padding: 2px 6px;
+                font-size: 11px;
+                font-weight: bold;
+                min-width: 20px;
+                text-align: center;
+            }
+
+            /* Backdrop overlay for queue panel */
+            #queueBackdrop {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: var(--overlay);
+                z-index: 999;
+                opacity: 0;
+                transition: opacity 0.3s ease;
+            }
+
+            #queueBackdrop.active {
+                display: block;
+                opacity: 1;
+            }
+
+            /* Queue close button - Mobile only */
+            #queueCloseBtn {
+                display: none;
+            }
+
+            /* Mobile Bottom Navigation - Hidden on desktop */
+            .mobile-bottom-nav {
+                display: none;
+            }
+
+            /* Desktop Navigation - Shown on desktop */
+            .desktop-nav {
+                display: flex;
+            }
+
+            /* Mobile/Tablet Breakpoint (≤1024px) */
+            @media (max-width: 1024px) {
+                /* Show FAB and hide queue by default */
+                #queueToggleFAB {
+                    display: flex;
+                }
+
+                /* Queue panel becomes full-screen overlay */
+                .queue-panel {
+                    transform: translateX(100%);
+                    width: 100%;
+                    transition: transform 0.3s ease-out;
+                    z-index: 1000;
+                }
+
+                .queue-panel.open {
+                    transform: translateX(0);
+                }
+
+                /* Remove desktop margin */
+                body {
+                    margin-right: 0 !important;
+                }
+
+                /* Show close button in queue header on mobile */
+                #queueCloseBtn {
+                    display: block;
+                    background: none;
+                    border: none;
+                    color: white;
+                    font-size: 24px;
+                    cursor: pointer;
+                    padding: 0;
+                    width: 32px;
+                    height: 32px;
+                    line-height: 1;
+                }
+            }
+
+            /* Primary Mobile Breakpoint (≤768px) */
+            @media (max-width: 768px) {
+                /* Container padding reduction + space for bottom nav */
+                .container {
+                    padding: 16px;
+                    padding-bottom: calc(70px + env(safe-area-inset-bottom));
+                }
+
+                /* Hide desktop navigation on mobile */
+                .desktop-nav {
+                    display: none !important;
+                }
+
+                /* Show mobile bottom navigation */
+                .mobile-bottom-nav {
+                    display: flex;
+                    position: fixed;
+                    bottom: 0;
+                    left: 0;
+                    right: 0;
+                    background: var(--bg-primary);
+                    border-top: 1px solid var(--border-primary);
+                    padding: 8px 0 max(8px, env(safe-area-inset-bottom));
+                    justify-content: space-around;
+                    z-index: 900;
+                    box-shadow: 0 -2px 10px var(--shadow-sm);
+                }
+
+                .bottom-nav-item {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    background: none;
+                    border: none;
+                    padding: 4px 8px;
+                    cursor: pointer;
+                    color: var(--text-secondary);
+                    transition: color 0.2s ease-out;
+                    min-width: 60px;
+                    gap: 2px;
+                    position: relative;
+                    -webkit-tap-highlight-color: transparent;
+                }
+
+                .bottom-nav-item.active {
+                    color: var(--primary-color);
+                }
+
+                .bottom-nav-item:active {
+                    background: none;
+                    transform: scale(0.95);
+                }
+
+                /* Override global button:hover that causes persistent blue background on mobile */
+                .bottom-nav-item:hover {
+                    background: none;
+                    color: var(--text-secondary);  /* Keep gray unless it's the active tab */
+                }
+
+                .bottom-nav-item.active:hover {
+                    background: none;
+                    color: var(--primary-color);  /* Active tab stays blue on hover */
+                }
+
+                /* Override any focus state backgrounds */
+                .bottom-nav-item:focus,
+                .bottom-nav-item:focus-visible {
+                    background: none;
+                    outline: none;
+                }
+
+                /* Tap color fade animation */
+                @keyframes colorPulse {
+                    0% {
+                        color: var(--primary-color);
+                    }
+                    100% {
+                        color: var(--text-secondary);
+                    }
+                }
+
+                .bottom-nav-icon {
+                    width: 24px;
+                    height: 24px;
+                    stroke-width: 2;
+                }
+
+                .bottom-nav-label {
+                    font-size: 11px;
+                    font-weight: 500;
+                    white-space: nowrap;
+                }
+
+                /* Library grids - smaller tiles on mobile */
+                .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+                    gap: 12px;
+                }
+
+                /* Typography adjustments */
+                h1 {
+                    font-size: 20px;
+                    margin-bottom: 4px;
+                }
+
+                .subtitle {
+                    font-size: 13px;
+                    margin-bottom: 16px;
+                }
+
+                /* Form elements - stack vertically */
+                .row {
+                    grid-template-columns: 1fr;
+                    gap: 16px;
+                }
+
+                /* Buttons - larger touch targets */
+                button {
+                    min-height: 44px;
+                    font-size: 15px;
+                }
+
+                /* Downloads button group - stack vertically on mobile */
+                .downloads-button-group {
+                    flex-direction: column;
+                    gap: 10px;
+                }
+
+                .downloads-button-group button {
+                    width: 100%;
+                    margin: 0 !important;
+                }
+
+                /* Modal dialogs - near full-screen */
+                .modal-content {
+                    width: 95%;
+                    max-width: 95%;
+                    max-height: 95vh;
+                }
+
+                .modal-header h2 {
+                    font-size: 20px;
+                }
+
+                .modal-close {
+                    font-size: 28px;
+                    width: 44px;
+                    height: 44px;
+                }
+
+                /* Progress stats - 2 columns on mobile */
+                .progress-stats {
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 8px;
+                }
+
+                /* Queue panel adjustments */
+                .queue-header h3 {
+                    font-size: 16px;
+                }
+
+                .queue-controls {
+                    gap: 6px;
+                }
+
+                .queue-control-btn {
+                    font-size: 12px;
+                    padding: 6px 10px;
+                }
+
+                /* Library item buttons - larger */
+                .library-item button {
+                    min-height: 40px;
+                    font-size: 14px;
+                }
+
+                /* Search container - full width */
+                .search-container {
+                    max-width: 100%;
+                    flex-direction: column;
+                }
+
+                .search-container input,
+                .search-container button {
+                    width: 100%;
+                }
+
+                /* Settings sections - start collapsed on mobile */
+                .collapsible-content {
+                    display: none;
+                }
+
+                /* Monitor stats - single column */
+                .monitor-stats {
+                    grid-template-columns: 1fr;
+                }
+
+                /* Playlist selector - full width dropdown on mobile */
+                .selector-controls {
+                    flex-direction: column;
+                    gap: 8px;
+                }
+
+                .playlist-dropdown {
+                    width: 100%;
+                }
+
+                /* Monitor controls - vertical stacked layout on mobile */
+                .monitor-controls {
+                    flex-direction: column;
+                    gap: 8px;
+                    width: 100%;
+                }
+
+                .monitor-controls .toggle-container {
+                    align-self: stretch;
+                }
+
+                .monitor-controls .toggle-switch {
+                    transform: scale(1.2);
+                }
+
+                .monitor-controls button {
+                    width: 100%;
+                    min-height: 44px;
+                    font-size: 15px;
+                    font-weight: 500;
+                }
+
+                /* Activity track lists - allow wrapping for long titles on mobile */
+                .activity-track {
+                    white-space: normal;
+                    word-break: break-word;
+                }
+
+                /* Color swatches - smaller on mobile */
+                .color-swatches {
+                    grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+                    gap: 10px;
+                }
+
+                .swatch-color {
+                    height: 35px;
+                }
+
+                .swatch-name {
+                    font-size: 12px;
+                }
+
+                /* Dark mode radio options - more compact on mobile */
+                .radio-option {
+                    padding: 12px;
+                }
+
+                .radio-label {
+                    font-size: 14px;
+                }
+
+                .radio-description {
+                    font-size: 12px;
+                }
+
+                /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
+                .nav-tabs {
+                    scrollbar-width: none;
+                    -ms-overflow-style: none;
+                    gap: 3px;
+                    padding: 3px;
+                }
+                .nav-tabs::-webkit-scrollbar {
+                    display: none;
+                }
+
+                /* Smaller, tighter tabs on mobile */
+                .nav-tab {
+                    padding: 6px 12px;
+                    font-size: 14px;
+                }
+
+                /* Add bottom padding to views to prevent bottom nav overlap */
+                .view-section {
+                    padding-bottom: 80px;
+                }
+            }
+
+            /* Small phones (≤428px) - extra adjustments */
+            @media (max-width: 428px) {
+                .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+                    gap: 10px;
+                }
+
+                .container {
+                    padding: 12px;
+                }
+
+                h1 {
+                    font-size: 18px;
+                    margin-bottom: 3px;
+                }
+
+                .subtitle {
+                    font-size: 12px;
+                    margin-bottom: 12px;
+                }
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>gamdl Advanced Web UI</h1>
-            <p class="subtitle">Browse your library or download from Apple Music URLs</p>
 
             <!-- View Navigation -->
-            <div class="nav-tabs">
+            <!-- Desktop Navigation (hidden on mobile) -->
+            <div class="nav-tabs desktop-nav">
                 <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
+                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
                 <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
                 <button class="nav-tab" onclick="switchView('search', this)">Search</button>
-                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
                 <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
             </div>
 
+            <!-- Mobile Bottom Navigation (hidden on desktop) -->
+            <nav class="mobile-bottom-nav">
+                <button class="bottom-nav-item active" onclick="switchView('library', this)" data-view="library">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                    </svg>
+                    <span class="bottom-nav-label">Library</span>
+                </button>
+                <button class="bottom-nav-item" onclick="switchView('monitor', this)" data-view="monitor">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    <span class="bottom-nav-label">Monitor</span>
+                </button>
+                <button class="bottom-nav-item" onclick="switchView('downloads', this)" data-view="downloads">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                    </svg>
+                    <span class="bottom-nav-label">URLs</span>
+                </button>
+                <button class="bottom-nav-item" onclick="switchView('search', this)" data-view="search">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                    <span class="bottom-nav-label">Search</span>
+                </button>
+                <button class="bottom-nav-item" onclick="switchView('settings', this)" data-view="settings">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                    <span class="bottom-nav-label">Settings</span>
+                </button>
+            </nav>
+
             <!-- Library Browser View -->
             <div id="libraryView" class="view-section active">
+                <h2>Library Browser</h2>
+
                 <div id="apiInitError" class="library-error" style="display:none;"></div>
                 <div id="libraryError" class="library-error" style="display:none;"></div>
 
                 <!-- Library Type Tabs -->
                 <div class="nav-tabs">
-                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)">Albums</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)">Playlists</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)">Songs</button>
+                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)" ontouchstart="">Albums</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)" ontouchstart="">Playlists</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)" ontouchstart="">Songs</button>
                 </div>
 
                 <!-- Albums Tab -->
@@ -2189,16 +2958,18 @@ async def root():
 
             <!-- URL Downloads View -->
             <div id="downloadsView" class="view-section">
+                <h2>URL Downloads</h2>
+
             <form id="downloadForm">
                 <div class="form-group">
                     <label for="urls">Apple Music URLs (one per line)</label>
                     <textarea id="urls" name="urls" placeholder="https://music.apple.com/us/album/...&#10;https://music.apple.com/us/playlist/..." required></textarea>
                 </div>
 
-                <div class="button-group">
+                <div class="button-group downloads-button-group">
                     <button type="submit" id="downloadBtn">Start Download</button>
                     <button type="button" id="cancelBtn" class="cancel" disabled>Cancel</button>
-                    <button type="button" onclick="window.open('https://music.apple.com/au/home', '_blank')" style="background: #FA243C; margin-left: auto;">Open Apple Music</button>
+                    <button type="button" onclick="window.open('https://music.apple.com/au/home', '_blank')" style="background: #FA243C;">Open Apple Music</button>
                 </div>
             </form>
 
@@ -2236,7 +3007,6 @@ async def root():
             <!-- Settings View -->
             <div id="settingsView" class="view-section">
                 <h2>Settings</h2>
-                <p class="subtitle">Configure paths and download options</p>
 
                 <h3>Paths</h3>
                 <div class="form-group">
@@ -2389,6 +3159,81 @@ async def root():
                     <small>When enabled, the queue will continue processing even if items fail (after retries are exhausted). When disabled, the queue will pause on failures.</small>
                 </div>
 
+                <!-- Appearance Settings -->
+                <h3>Appearance</h3>
+
+                <div class="form-group color-theme-group">
+                    <label>Primary Color Theme</label>
+                    <small>Choose the color for buttons, active tabs, and highlights</small>
+
+                    <div class="color-swatches">
+                        <button type="button" class="color-swatch active" data-color="#007aff" data-name="Blue" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #007aff;"></div>
+                            <div class="swatch-name">Blue</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#8e44ad" data-name="Purple" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #8e44ad;"></div>
+                            <div class="swatch-name">Purple</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#34c759" data-name="Green" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #34c759;"></div>
+                            <div class="swatch-name">Green</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff9500" data-name="Orange" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff9500;"></div>
+                            <div class="swatch-name">Orange</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff2d55" data-name="Pink" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff2d55;"></div>
+                            <div class="swatch-name">Pink</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#5ac8fa" data-name="Teal" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #5ac8fa;"></div>
+                            <div class="swatch-name">Teal</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff3b30" data-name="Red" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff3b30;"></div>
+                            <div class="swatch-name">Red</div>
+                        </button>
+                    </div>
+
+                    <input type="hidden" id="primaryColor" name="primaryColor" value="#007aff">
+                </div>
+
+                <!-- Dark Mode Settings -->
+                <div class="form-group dark-mode-group">
+                    <label>Dark Mode</label>
+                    <small>Choose how the interface appears</small>
+
+                    <div class="dark-mode-options">
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="auto" checked onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Automatic</span>
+                                <span class="radio-description">Follows system preference</span>
+                            </div>
+                        </label>
+
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="light" onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Light</span>
+                                <span class="radio-description">Always use light mode</span>
+                            </div>
+                        </label>
+
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="dark" onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Dark</span>
+                                <span class="radio-description">Always use dark mode</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <input type="hidden" id="darkModePreference" name="darkModePreference" value="auto">
+                </div>
+
                 <div class="button-group">
                     <button type="button" onclick="saveAllSettings()">Save Settings</button>
                 </div>
@@ -2397,7 +3242,6 @@ async def root():
             <!-- Monitor View -->
             <div id="monitorView" class="view-section">
                 <h2>Playlist Monitor</h2>
-                <p class="subtitle">Automatically download new additions to a monitored playlist</p>
 
                 <!-- Playlist Selector -->
                 <div class="playlist-selector-section">
@@ -2406,9 +3250,8 @@ async def root():
                         <select id="playlistSelector" class="playlist-dropdown" onchange="handlePlaylistSelection()">
                             <option value="">-- Select a playlist --</option>
                         </select>
-                        <button onclick="loadPlaylistsForSelector()" class="btn-secondary">Refresh Playlists</button>
                     </div>
-                    <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: #666;">
+                    <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: var(--text-secondary);">
                         Loading playlists...
                     </div>
                     <div id="playlistSelectorError" class="error-message" style="display: none; margin-top: 10px;"></div>
@@ -2423,12 +3266,14 @@ async def root():
 
                     <div class="monitor-active" style="display: none;">
                         <div class="monitor-header">
-                            <h3 id="monitoredPlaylistName">Playlist Name</h3>
                             <div class="monitor-controls">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="monitorToggle" onchange="toggleMonitoring()">
-                                    <span class="slider"></span>
-                                </label>
+                                <div class="toggle-container">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="monitorToggle" onchange="toggleMonitoring()">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <small class="toggle-label">Pause/Resume Monitoring</small>
+                                </div>
                                 <button onclick="manualCheckPlaylist()" class="btn-secondary">Check Now</button>
                                 <button onclick="stopMonitoring()" class="btn-danger">Stop Monitoring</button>
                             </div>
@@ -2477,13 +3322,13 @@ async def root():
 
                 <!-- Search Result Tabs -->
                 <div class="nav-tabs" style="margin-top: 20px;">
-                    <button class="nav-tab active" onclick="switchSearchTab('all', this)">All</button>
-                    <button class="nav-tab" onclick="switchSearchTab('songs', this)">Songs</button>
-                    <button class="nav-tab" onclick="switchSearchTab('albums', this)">Albums</button>
-                    <button class="nav-tab" onclick="switchSearchTab('artists', this)">Artists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)">Playlists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)">Music Videos</button>
-                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)">Podcasts</button>
+                    <button class="nav-tab active" onclick="switchSearchTab('all', this)" ontouchstart="">All</button>
+                    <button class="nav-tab" onclick="switchSearchTab('songs', this)" ontouchstart="">Songs</button>
+                    <button class="nav-tab" onclick="switchSearchTab('albums', this)" ontouchstart="">Albums</button>
+                    <button class="nav-tab" onclick="switchSearchTab('artists', this)" ontouchstart="">Artists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)" ontouchstart="">Playlists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)" ontouchstart="">Music Videos</button>
+                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)" ontouchstart="">Podcasts</button>
                 </div>
 
                 <!-- Error Display -->
@@ -2591,6 +3436,7 @@ async def root():
             <div id="queuePanel" class="queue-panel">
                 <div class="queue-header">
                     <h3>Download Queue</h3>
+                    <button id="queueCloseBtn" onclick="closeQueuePanel()" aria-label="Close Queue">&times;</button>
                 </div>
 
                 <div class="queue-controls">
@@ -2637,12 +3483,25 @@ async def root():
                 </div>
             </div>
 
+            <!-- Mobile Queue Toggle FAB -->
+            <button id="queueToggleFAB" onclick="toggleQueuePanel()" aria-label="Toggle Queue">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span class="queue-badge" style="display: none;">0</span>
+            </button>
+
+            <!-- Queue Backdrop (mobile only) -->
+            <div id="queueBackdrop" onclick="closeQueuePanel()"></div>
+
             <!-- Episode Modal -->
             <div id="episodeModal" class="modal" style="display:none;">
                 <div class="modal-content" style="max-width: 900px;">
                     <div class="modal-header">
                         <h3 id="episodeModalTitle">Podcast Episodes</h3>
-                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: #666;">&times;</button>
+                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: var(--text-secondary);">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
@@ -2666,6 +3525,75 @@ async def root():
             let completedTracks = 0;
             let skippedTracks = 0;
             let failedTracks = 0;
+
+            // ===================================
+            // MOBILE QUEUE PANEL MANAGEMENT
+            // ===================================
+
+            // Mobile queue panel toggle
+            function toggleQueuePanel() {
+                const panel = document.getElementById('queuePanel');
+                const backdrop = document.getElementById('queueBackdrop');
+                const isOpen = panel.classList.contains('open');
+
+                if (isOpen) {
+                    closeQueuePanel();
+                } else {
+                    openQueuePanel();
+                }
+            }
+
+            function openQueuePanel() {
+                const panel = document.getElementById('queuePanel');
+                const backdrop = document.getElementById('queueBackdrop');
+                panel.classList.add('open');
+                backdrop.classList.add('active');
+                document.body.style.overflow = 'hidden'; // Prevent background scrolling
+            }
+
+            function closeQueuePanel() {
+                const panel = document.getElementById('queuePanel');
+                const backdrop = document.getElementById('queueBackdrop');
+                panel.classList.remove('open');
+                backdrop.classList.remove('active');
+                document.body.style.overflow = ''; // Restore scrolling
+            }
+
+            // Viewport detection
+            function isMobile() {
+                return window.innerWidth <= 1024;
+            }
+
+            // Auto-close queue on desktop resize
+            window.addEventListener('resize', () => {
+                if (!isMobile()) {
+                    const panel = document.getElementById('queuePanel');
+                    if (panel && panel.classList.contains('open')) {
+                        closeQueuePanel();
+                    }
+                }
+            });
+
+            // Update FAB badge count when queue changes
+            function updateQueueBadge() {
+                const badge = document.querySelector('#queueToggleFAB .queue-badge');
+                if (!badge) return;
+
+                const queuedCount = parseInt(document.getElementById('queuedCount')?.textContent || '0');
+                const downloadingCount = parseInt(document.getElementById('downloadingCount')?.textContent || '0');
+                const totalActive = queuedCount + downloadingCount;
+
+                if (totalActive > 0) {
+                    badge.textContent = totalActive;
+                    badge.style.display = 'block';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+
+            // ===================================
+            // END MOBILE QUEUE PANEL MANAGEMENT
+            // ===================================
 
             // Check API status on page load and show warning if needed
             async function checkApiStatus() {
@@ -2908,12 +3836,26 @@ async def root():
             let currentLibraryTab = 'albums';
 
             function switchView(view, clickedElement) {
-                // Update nav tabs
-                document.querySelectorAll('.nav-tabs > .nav-tab').forEach(tab => {
+                // Remove focus to prevent persistent highlight on mobile
+                if (clickedElement) {
+                    clickedElement.blur();
+                }
+
+                // Update desktop nav tabs
+                document.querySelectorAll('.desktop-nav .nav-tab').forEach(tab => {
                     tab.classList.remove('active');
                 });
-                if (clickedElement) {
+                if (clickedElement && clickedElement.classList.contains('nav-tab')) {
                     clickedElement.classList.add('active');
+                }
+
+                // Update mobile bottom nav active state
+                document.querySelectorAll('.bottom-nav-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                const mobileNavItem = document.querySelector(`.bottom-nav-item[data-view="${view}"]`);
+                if (mobileNavItem) {
+                    mobileNavItem.classList.add('active');
                 }
 
                 // Show/hide views
@@ -2949,6 +3891,7 @@ async def root():
                 });
                 if (clickedElement) {
                     clickedElement.classList.add('active');
+                    clickedElement.blur();
                 }
 
                 // Show/hide tab content (scoped to Library view only)
@@ -3136,9 +4079,9 @@ async def root():
                 if (type === 'song') {
                     subtitle.textContent = `${item.artist} • ${item.album}`;
                 } else if (type === 'album') {
-                    subtitle.textContent = `${item.artist} • ${item.trackCount} songs`;
+                    subtitle.textContent = `${item.artist}`;
                 } else if (type === 'playlist') {
-                    subtitle.textContent = `${item.trackCount} songs`;
+                    subtitle.textContent = '';
                 }
 
                 // Create download button for albums/playlists
@@ -3727,7 +4670,7 @@ async def root():
                         // Subtitle
                         const subtitle = document.createElement('div');
                         subtitle.className = 'library-item-subtitle';
-                        subtitle.textContent = `${album.trackCount} tracks`;
+                        subtitle.textContent = album.artist;
                         item.appendChild(subtitle);
 
                         albumsGrid.appendChild(item);
@@ -3872,6 +4815,7 @@ async def root():
                 tabs.forEach(t => t.classList.remove('active'));
                 if (clickedElement) {
                     clickedElement.classList.add('active');
+                    clickedElement.blur();
                 } else {
                     tabs.forEach(t => {
                         const tabText = t.textContent.toLowerCase();
@@ -4038,7 +4982,7 @@ async def root():
                     infoDiv.appendChild(title);
 
                     const meta = document.createElement('div');
-                    meta.style.cssText = 'font-size: 13px; color: #666;';
+                    meta.style.cssText = 'font-size: 13px; color: var(--text-secondary);';
                     const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
                     const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
                     meta.textContent = `${date}${duration}`;
@@ -4151,8 +5095,193 @@ async def root():
                 document.getElementById('episodeModal').style.display = 'none';
             }
 
+            // Color theme management
+            let selectedPrimaryColor = '#007aff'; // Default
+
+            function selectColorTheme(button) {
+                // Remove active class from all swatches
+                document.querySelectorAll('.color-swatch').forEach(swatch => {
+                    swatch.classList.remove('active');
+                });
+
+                // Add active class to selected swatch
+                button.classList.add('active');
+
+                // Get selected color
+                const color = button.getAttribute('data-color');
+                selectedPrimaryColor = color;
+
+                // Update hidden input
+                document.getElementById('primaryColor').value = color;
+
+                // Apply color immediately (live preview)
+                applyPrimaryColor(color);
+            }
+
+            function applyPrimaryColor(color) {
+                // Calculate hover variant (darken by ~20%)
+                const hoverColor = darkenColor(color, 20);
+                const lightColor = hexToRGBA(color, 0.1);
+                const shadowColor = hexToRGBA(color, 0.4);
+
+                // Apply to CSS variables
+                document.documentElement.style.setProperty('--primary-color', color);
+                document.documentElement.style.setProperty('--primary-color-hover', hoverColor);
+                document.documentElement.style.setProperty('--primary-color-light', lightColor);
+                document.documentElement.style.setProperty('--primary-color-shadow', shadowColor);
+            }
+
+            function darkenColor(hex, percent) {
+                // Convert hex to RGB
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+
+                // Darken
+                const newR = Math.max(0, Math.floor(r * (100 - percent) / 100));
+                const newG = Math.max(0, Math.floor(g * (100 - percent) / 100));
+                const newB = Math.max(0, Math.floor(b * (100 - percent) / 100));
+
+                // Convert back to hex
+                return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`;
+            }
+
+            function hexToRGBA(hex, alpha) {
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+                return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+            }
+
+            // Dark mode management
+            let currentDarkModePreference = 'auto'; // auto, light, dark
+
+            function getSystemTheme() {
+                return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+
+            function selectDarkMode(input) {
+                const value = input.value;
+                currentDarkModePreference = value;
+
+                // Update hidden input
+                document.getElementById('darkModePreference').value = value;
+
+                // Apply theme immediately
+                applyDarkMode(value);
+            }
+
+            function applyDarkMode(preference) {
+                let actualTheme;
+
+                if (preference === 'auto') {
+                    actualTheme = getSystemTheme();
+                } else {
+                    actualTheme = preference; // 'light' or 'dark'
+                }
+
+                // Set data-theme attribute on html element
+                document.documentElement.setAttribute('data-theme', actualTheme);
+
+                // Save to localStorage for immediate persistence
+                localStorage.setItem('dark-mode-preference', preference);
+
+                console.log(`Applied theme: ${actualTheme} (preference: ${preference})`);
+            }
+
+            // Listen for system theme changes (only matters if preference is 'auto')
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+                if (currentDarkModePreference === 'auto') {
+                    applyDarkMode('auto');
+                }
+            });
+
+            // Initialize theme on page load (called from init function)
+            function initDarkMode() {
+                // Try to get from server first (will be set in loadPreferences)
+                // Fallback to localStorage
+                const savedPreference = localStorage.getItem('dark-mode-preference') || 'auto';
+                currentDarkModePreference = savedPreference;
+                applyDarkMode(savedPreference);
+            }
+
             // Load and save user preferences
-            function loadPreferences() {
+            async function loadPreferences() {
+                try {
+                    // Try to load from server first
+                    const response = await fetch('/api/config/all-settings');
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const settings = data.settings;
+
+                        // Apply server settings to UI
+                        if (settings.cookies_path !== undefined) document.getElementById('cookiesPath').value = settings.cookies_path || '';
+                        if (settings.output_path !== undefined) document.getElementById('outputPath').value = settings.output_path || '';
+                        if (settings.podcast_output_path !== undefined) document.getElementById('podcastOutputPath').value = settings.podcast_output_path || '';
+                        if (settings.song_codec !== undefined) document.getElementById('songCodec').value = settings.song_codec || '';
+                        if (settings.music_video_resolution !== undefined) document.getElementById('musicVideoResolution').value = settings.music_video_resolution || '';
+                        if (settings.cover_size !== undefined && settings.cover_size !== null) document.getElementById('coverSize').value = settings.cover_size;
+                        if (settings.cover_format !== undefined) document.getElementById('coverFormat').value = settings.cover_format || '';
+                        if (settings.no_cover !== undefined) document.getElementById('noCover').checked = settings.no_cover;
+                        if (settings.no_lyrics !== undefined) document.getElementById('noLyrics').checked = settings.no_lyrics;
+                        if (settings.extra_tags !== undefined) document.getElementById('extraTags').checked = settings.extra_tags;
+                        if (settings.include_videos_in_discography !== undefined) document.getElementById('includeVideosInDiscography').checked = settings.include_videos_in_discography;
+                        if (settings.save_playlist !== undefined) document.getElementById('savePlaylist').checked = settings.save_playlist;
+                        if (settings.enable_retry_delay !== undefined) document.getElementById('enableRetryDelay').checked = settings.enable_retry_delay;
+                        if (settings.max_retries !== undefined) document.getElementById('maxRetries').value = settings.max_retries;
+                        if (settings.retry_delay !== undefined) document.getElementById('retryDelay').value = settings.retry_delay;
+                        if (settings.song_delay !== undefined) document.getElementById('songDelay').value = settings.song_delay;
+                        if (settings.queue_item_delay !== undefined) document.getElementById('queueItemDelay').value = settings.queue_item_delay;
+                        if (settings.continue_on_error !== undefined) document.getElementById('continueOnError').checked = settings.continue_on_error;
+
+                        // Load and apply primary color
+                        if (settings.primary_color) {
+                            selectedPrimaryColor = settings.primary_color;
+                            applyPrimaryColor(settings.primary_color);
+
+                            // Set active swatch
+                            document.querySelectorAll('.color-swatch').forEach(swatch => {
+                                if (swatch.getAttribute('data-color') === settings.primary_color) {
+                                    swatch.classList.add('active');
+                                } else {
+                                    swatch.classList.remove('active');
+                                }
+                            });
+
+                            // Update hidden input
+                            document.getElementById('primaryColor').value = settings.primary_color;
+                        }
+
+                        // Load and apply dark mode preference
+                        if (settings.dark_mode_preference) {
+                            currentDarkModePreference = settings.dark_mode_preference;
+                            applyDarkMode(settings.dark_mode_preference);
+
+                            // Set active radio button
+                            document.querySelectorAll('input[name="darkMode"]').forEach(radio => {
+                                radio.checked = (radio.value === settings.dark_mode_preference);
+                            });
+
+                            // Update hidden input
+                            document.getElementById('darkModePreference').value = settings.dark_mode_preference;
+                        }
+
+                        console.log('Settings loaded from server');
+                        toggleRetryDelaySettings();  // Update visibility after loading settings
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('Failed to load settings from server, falling back to localStorage:', error);
+                }
+
+                // Fallback to localStorage if server request fails
+                loadPreferencesFromLocalStorage();
+                toggleRetryDelaySettings();  // Update visibility after loading settings
+            }
+
+            // Fallback function for localStorage (renamed from original loadPreferences)
+            function loadPreferencesFromLocalStorage() {
                 // Paths
                 const cookiesPath = localStorage.getItem('gamdl_cookies_path');
                 const outputPath = localStorage.getItem('gamdl_output_path');
@@ -4202,6 +5331,8 @@ async def root():
                 if (songDelay) document.getElementById('songDelay').value = songDelay;
                 if (queueItemDelay) document.getElementById('queueItemDelay').value = queueItemDelay;
                 if (continueOnError === 'true') document.getElementById('continueOnError').checked = true;
+
+                console.log('Settings loaded from localStorage');
             }
 
             function savePreferences() {
@@ -4235,6 +5366,10 @@ async def root():
                 // Queue behavior options
                 const continueOnError = document.getElementById('continueOnError').checked;
 
+                // Appearance options
+                const primaryColor = selectedPrimaryColor || document.getElementById('primaryColor').value;
+                const darkModePreference = currentDarkModePreference || document.getElementById('darkModePreference').value;
+
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
@@ -4254,6 +5389,8 @@ async def root():
                 localStorage.setItem('gamdl_song_delay', songDelay);
                 localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
                 localStorage.setItem('gamdl_continue_on_error', continueOnError);
+                localStorage.setItem('gamdl_primary_color', primaryColor);
+                localStorage.setItem('gamdl_dark_mode_preference', darkModePreference);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -4288,6 +5425,10 @@ async def root():
 
                         // Queue behavior options
                         continue_on_error: continueOnError,
+
+                        // Appearance options
+                        primary_color: primaryColor,
+                        dark_mode_preference: darkModePreference,
                     })
                 }).catch(err => {
                     console.error('Failed to save settings to server config:', err);
@@ -4330,7 +5471,8 @@ async def root():
 
                     const data = await response.json();
                     btn.textContent = isPaused ? '⏸ Pause' : '▶ Resume';
-                    btn.style.background = isPaused ? '#007aff' : '#34c759';
+                    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim();
+                    btn.style.background = isPaused ? primaryColor : '#34c759';
 
                     // Immediately refresh queue status
                     await refreshQueueStatus();
@@ -4422,13 +5564,17 @@ async def root():
                     }
                 } else {
                     pauseBtn.innerHTML = pauseSVG + ' Pause';
-                    pauseBtn.style.background = '#007aff';
+                    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim();
+                    pauseBtn.style.background = primaryColor;
                     pauseBtn.style.color = 'white';
-                    pauseBtn.style.borderColor = '#007aff';
+                    pauseBtn.style.borderColor = primaryColor;
                 }
 
                 // Render queue list
                 renderQueueList(queueData.items);
+
+                // Update mobile FAB badge
+                updateQueueBadge();
             }
 
             function renderQueueList(items) {
@@ -4639,8 +5785,8 @@ async def root():
 
             // Load albums and preferences on page load
             document.addEventListener('DOMContentLoaded', () => {
-                loadPreferences();
-                toggleRetryDelaySettings();  // Set initial visibility based on checkbox state
+                initDarkMode();  // Initialize theme first for no flash
+                loadPreferences();  // toggleRetryDelaySettings() is now called inside loadPreferences() after settings are loaded
                 loadLibraryAlbums();
                 startQueueRefresh();
             });
@@ -4720,7 +5866,7 @@ async def root():
                     allPlaylists.forEach(playlist => {
                         const option = document.createElement('option');
                         option.value = playlist.id;
-                        option.textContent = `${playlist.name} (${playlist.trackCount} tracks)`;
+                        option.textContent = playlist.name;
                         option.dataset.playlistName = playlist.name;
                         dropdown.appendChild(option);
                     });
@@ -4818,9 +5964,6 @@ async def root():
                         emptyDiv.style.display = 'none';
                         activeDiv.style.display = 'block';
 
-                        // Update playlist name
-                        document.getElementById('monitoredPlaylistName').textContent = status.monitored_playlist.playlist_name;
-
                         // Update toggle
                         document.getElementById('monitorToggle').checked = status.enabled;
 
@@ -4832,7 +5975,21 @@ async def root():
                         // Format last checked time
                         if (status.monitored_playlist.last_checked_at) {
                             const lastChecked = new Date(status.monitored_playlist.last_checked_at);
-                            document.getElementById('monitorLastChecked').textContent = formatRelativeTime(lastChecked);
+                            const now = new Date();
+                            const diff = Math.floor((now - lastChecked) / 1000); // seconds
+
+                            // Relative time
+                            let relative;
+                            if (diff < 60) relative = 'Just now';
+                            else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                            else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                            else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                            else relative = `${Math.floor(diff / 604800)} weeks ago`;
+
+                            // Time only (no date needed since it's recent)
+                            const timeStr = lastChecked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+                            document.getElementById('monitorLastChecked').innerHTML = `${relative}<br>${timeStr}`;
                         } else {
                             document.getElementById('monitorLastChecked').textContent = 'Never';
                         }
@@ -4840,7 +5997,22 @@ async def root():
                         // Format monitoring since time
                         if (status.monitored_playlist.monitored_since) {
                             const since = new Date(status.monitored_playlist.monitored_since);
-                            document.getElementById('monitoringSince').textContent = formatRelativeTime(since);
+                            const now = new Date();
+                            const diff = Math.floor((now - since) / 1000); // seconds
+
+                            // Relative time
+                            let relative;
+                            if (diff < 60) relative = 'Just now';
+                            else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                            else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                            else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                            else relative = `${Math.floor(diff / 604800)} weeks ago`;
+
+                            // Full date and time
+                            const dateStr = since.toLocaleDateString([], { day: 'numeric', month: 'short' });
+                            const timeStr = since.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+                            document.getElementById('monitoringSince').innerHTML = `${relative}<br>${dateStr}, ${timeStr}`;
                         } else {
                             document.getElementById('monitoringSince').textContent = '-';
                         }
@@ -4874,11 +6046,29 @@ async def root():
                     const icon = getEventIcon(event.event_type);
                     const time = new Date(event.timestamp);
 
+                    // Build track list HTML if tracks are present
+                    let trackListHtml = '';
+                    if (event.tracks && event.tracks.length > 0) {
+                        trackListHtml = '<div class="activity-tracks">';
+                        event.tracks.forEach(track => {
+                            trackListHtml += `<div class="activity-track">• ${track.title} - ${track.artist}</div>`;
+                        });
+
+                        // Show "+X more" if there are additional tracks
+                        if (event.track_count && event.track_count > event.tracks.length) {
+                            const remaining = event.track_count - event.tracks.length;
+                            trackListHtml += `<div class="activity-track-more">(+${remaining} more)</div>`;
+                        }
+
+                        trackListHtml += '</div>';
+                    }
+
                     html += `
                         <div class="activity-item ${eventClass}">
                             <div class="activity-icon">${icon}</div>
                             <div class="activity-content">
                                 <div class="activity-message">${event.message}</div>
+                                ${trackListHtml}
                                 <div class="activity-time">${formatRelativeTime(time)}</div>
                             </div>
                         </div>
@@ -4892,6 +6082,8 @@ async def root():
                 const icons = {
                     'new_tracks': '+',
                     'removed_tracks': '−',
+                    'downloads_completed': '✓',
+                    'downloaded': '✓',
                     'started': '▶',
                     'stopped': '■',
                     'toggle': '⚙',
@@ -4905,11 +6097,21 @@ async def root():
                 const now = new Date();
                 const diff = Math.floor((now - date) / 1000); // seconds
 
-                if (diff < 60) return 'Just now';
-                if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
-                if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
-                if (diff < 604800) return `${Math.floor(diff / 86400)} days ago`;
-                return date.toLocaleDateString();
+                // Format actual timestamp (e.g., "3:45 PM" or "Jan 22, 3:45 PM")
+                const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                const isToday = date.toDateString() === now.toDateString();
+                const timestamp = isToday ? timeStr : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+
+                // Relative time
+                let relative;
+                if (diff < 60) relative = 'Just now';
+                else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                else relative = null;
+
+                // Return "relative • timestamp" or just timestamp if relative is null
+                return relative ? `${relative} • ${timestamp}` : timestamp;
             }
 
             async function toggleMonitoring() {
@@ -4953,7 +6155,6 @@ async def root():
                     const result = await response.json();
 
                     if (response.ok) {
-                        alert('Check completed! Refresh the monitor status to see updates.');
                         refreshMonitorStatus();
                     } else {
                         alert(`Check failed: ${result.detail || 'Unknown error'}`);
@@ -4980,7 +6181,7 @@ async def root():
                         <div style="text-align: center;">
                             <div class="spinner"></div>
                             <p id="artistModalLoadingText">Fetching artist catalog...</p>
-                            <small id="artistModalLoadingProgress" style="color: #666;"></small>
+                            <small id="artistModalLoadingProgress" style="color: var(--text-secondary);"></small>
                         </div>
                     </div>
                     <div id="artistModalContent" style="display:none;">
@@ -5197,10 +6398,65 @@ async def save_all_settings_config(request_data: dict):
     if "continue_on_error" in request_data:
         config["continue_on_error"] = request_data["continue_on_error"]
 
+    # Appearance options
+    if "primary_color" in request_data:
+        config["primary_color"] = request_data["primary_color"]
+    if "dark_mode_preference" in request_data:
+        config["dark_mode_preference"] = request_data["dark_mode_preference"]
+
     # Save to disk
     save_webui_config(config)
 
     return {"success": True, "message": "All settings saved to configuration"}
+
+
+@app.get("/api/config/all-settings")
+async def get_all_settings_config():
+    """Retrieve all user settings from server-side config."""
+    config = load_webui_config()
+
+    # Return all settings with defaults for missing values
+    return {
+        "success": True,
+        "settings": {
+            # Paths
+            "cookies_path": config.get("cookies_path", ""),
+            "output_path": config.get("output_path", ""),
+            "podcast_output_path": config.get("podcast_output_path", ""),
+            "temp_path": config.get("temp_path", ""),
+            "final_path_template": config.get("final_path_template", ""),
+
+            # Audio options
+            "song_codec": config.get("song_codec", ""),
+            "music_video_codec": config.get("music_video_codec", ""),
+            "music_video_resolution": config.get("music_video_resolution", ""),
+
+            # Cover art options
+            "cover_size": config.get("cover_size", None),
+            "cover_format": config.get("cover_format", ""),
+            "no_cover": config.get("no_cover", False),
+
+            # Metadata options
+            "no_lyrics": config.get("no_lyrics", False),
+            "extra_tags": config.get("extra_tags", False),
+            "include_videos_in_discography": config.get("include_videos_in_discography", False),
+            "save_playlist": config.get("save_playlist", False),
+
+            # Retry/delay options
+            "enable_retry_delay": config.get("enable_retry_delay", True),
+            "max_retries": config.get("max_retries", 3),
+            "retry_delay": config.get("retry_delay", 60),
+            "song_delay": config.get("song_delay", 0.0),
+            "queue_item_delay": config.get("queue_item_delay", 0.0),
+
+            # Queue behavior options
+            "continue_on_error": config.get("continue_on_error", False),
+
+            # Appearance options
+            "primary_color": config.get("primary_color", "#007aff"),
+            "dark_mode_preference": config.get("dark_mode_preference", "auto"),
+        }
+    }
 
 
 # =============================================================================
@@ -7124,7 +8380,9 @@ def main(host: str = "127.0.0.1", port: int = 8080):
     import webbrowser
     import threading
 
-    url = f"http://{host}:{port}"
+    # Use localhost for browser URL when binding to 0.0.0.0
+    browser_host = "localhost" if host == "0.0.0.0" else host
+    url = f"http://{browser_host}:{port}"
 
     print(f"\ngamdl Web UI starting...")
     print(f"Server: {url}")
