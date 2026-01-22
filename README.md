@@ -32,12 +32,12 @@ These are in "active" development and in varying states of useability. (Check th
 - mobile support for webUI (check up on it from your phone)
 - A better UI (I guess this is part of the mobile support)
 - Colour accents & dark/light mode support
+- Fix the "null songs" count in WebUI playlists
 
 
 ## 🗓️ Future Features
 These will come in time (maybe), I don't have a timeline tho.
 
-- Fix the "null songs" count in WebUI playlists
 
 -------------------------------------------------------------------------------------------------------------------------------
 
