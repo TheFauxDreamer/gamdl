@@ -1591,6 +1591,11 @@ async def root():
                 gap: 20px;
                 margin: 20px 0;
             }
+            /* Compact mode - desktop */
+            body.compact-mode .library-grid {
+                grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+                gap: 15px;
+            }
             .library-item {
                 background: var(--bg-tertiary);
                 border-radius: 8px;
@@ -2513,6 +2518,86 @@ async def root():
                 background: #0051d5;
             }
 
+            /* Compact mode group styling */
+            .compact-mode-group {
+                margin-bottom: 30px;
+            }
+
+            .compact-mode-options {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 4px;
+                margin-top: 15px;
+                background: var(--bg-secondary);
+                padding: 4px;
+                border-radius: 8px;
+                width: fit-content;
+            }
+
+            .compact-mode-group .radio-option {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 10px 16px;
+                margin: 0;
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease-out;
+                white-space: nowrap;
+                -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
+                position: relative;
+                flex: 1;
+                min-width: 0;
+            }
+
+            .compact-mode-group .radio-option:hover {
+                background: rgba(0, 122, 255, 0.1);
+            }
+
+            .compact-mode-group .radio-option input[type="radio"] {
+                position: absolute;
+                opacity: 0;
+                pointer-events: none;
+            }
+
+            .compact-mode-group .radio-option .mode-icon {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+                color: var(--text-secondary);
+                transition: color 0.2s ease-out;
+            }
+
+            .compact-mode-group .radio-option .radio-label {
+                font-size: 15px;
+                font-weight: 500;
+                color: var(--text-secondary);
+                transition: color 0.2s ease-out;
+                line-height: 1;
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) {
+                background: var(--primary-color);
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) .mode-icon,
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) .radio-label {
+                color: #ffffff;
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked):hover {
+                background: var(--primary-color);
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked):active {
+                background: #0051d5;
+            }
+
             .btn-danger {
                 background-color: #f44336;
                 color: white;
@@ -2758,6 +2843,12 @@ async def root():
                     gap: 12px;
                 }
 
+                /* Compact mode - mobile */
+                body.compact-mode .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(95px, 1fr));
+                    gap: 10px;
+                }
+
                 /* Typography adjustments */
                 h1 {
                     font-size: 20px;
@@ -2779,6 +2870,11 @@ async def root():
                 button {
                     min-height: 44px;
                     font-size: 15px;
+                    padding: 12px 16px;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    hyphens: auto;
                 }
 
                 /* Downloads button group - stack vertically on mobile */
@@ -2832,7 +2928,26 @@ async def root():
                 /* Library item buttons - larger */
                 .library-item button {
                     min-height: 40px;
-                    font-size: 14px;
+                    font-size: 13px;
+                    padding: 8px 6px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+
+                .library-item .btn-group button {
+                    font-size: 12px;
+                    padding: 8px 4px;
+                }
+
+                .library-item .btn-primary,
+                .library-item .btn-secondary {
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    hyphens: auto;
+                    line-height: 1.3;
+                    padding: 10px 8px;
                 }
 
                 /* Search container - full width */
@@ -2932,6 +3047,30 @@ async def root():
                     height: 15px;
                 }
 
+                /* Compact mode radio options - mobile */
+                .compact-mode-options {
+                    width: 100%;
+                    gap: 4px;
+                    padding: 4px;
+                }
+
+                .compact-mode-group .radio-option {
+                    padding: 12px 8px;
+                    flex: 1;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .compact-mode-group .radio-option .radio-label {
+                    font-size: 14px;
+                }
+
+                .compact-mode-group .radio-option .mode-icon {
+                    width: 15px;
+                    height: 15px;
+                }
+
                 /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
                 .nav-tabs {
                     scrollbar-width: none;
@@ -2960,6 +3099,12 @@ async def root():
                 .library-grid {
                     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
                     gap: 10px;
+                }
+
+                /* Compact mode - extra small mobile */
+                body.compact-mode .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+                    gap: 8px;
                 }
 
                 .container {
@@ -3400,6 +3545,43 @@ async def root():
                     </div>
 
                     <input type="hidden" id="darkModePreference" name="darkModePreference" value="auto">
+                </div>
+
+                <!-- Compact Mode Settings -->
+                <div class="form-group compact-mode-group">
+                    <label>Grid Density</label>
+                    <small>Choose how much content to display in grids</small>
+
+                    <div class="compact-mode-options">
+                        <label class="radio-option" data-mode="normal">
+                            <input type="radio" name="compactMode" value="normal" checked onchange="selectCompactMode(this)">
+                            <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="3" width="7" height="7"></rect>
+                                <rect x="14" y="3" width="7" height="7"></rect>
+                                <rect x="3" y="14" width="7" height="7"></rect>
+                                <rect x="14" y="14" width="7" height="7"></rect>
+                            </svg>
+                            <span class="radio-label">Normal</span>
+                        </label>
+
+                        <label class="radio-option" data-mode="compact">
+                            <input type="radio" name="compactMode" value="compact" onchange="selectCompactMode(this)">
+                            <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="2" width="6" height="6"></rect>
+                                <rect x="10" y="2" width="6" height="6"></rect>
+                                <rect x="18" y="2" width="4" height="6"></rect>
+                                <rect x="2" y="10" width="6" height="6"></rect>
+                                <rect x="10" y="10" width="6" height="6"></rect>
+                                <rect x="18" y="10" width="4" height="6"></rect>
+                                <rect x="2" y="18" width="6" height="4"></rect>
+                                <rect x="10" y="18" width="6" height="4"></rect>
+                                <rect x="18" y="18" width="4" height="4"></rect>
+                            </svg>
+                            <span class="radio-label">Compact</span>
+                        </label>
+                    </div>
+
+                    <input type="hidden" id="compactModePreference" name="compactModePreference" value="normal">
                 </div>
 
                 <div class="button-group">
@@ -5383,6 +5565,38 @@ async def root():
                 applyDarkMode(savedPreference);
             }
 
+            // Compact mode management
+            let currentCompactModePreference = 'normal'; // normal, compact
+
+            function selectCompactMode(input) {
+                const value = input.value;
+                currentCompactModePreference = value;
+
+                // Update hidden input
+                document.getElementById('compactModePreference').value = value;
+
+                // Apply compact mode immediately
+                applyCompactMode(value);
+            }
+
+            function applyCompactMode(preference) {
+                if (preference === 'compact') {
+                    document.body.classList.add('compact-mode');
+                } else {
+                    document.body.classList.remove('compact-mode');
+                }
+
+                // Save to localStorage for immediate persistence
+                localStorage.setItem('compact-mode-preference', preference);
+            }
+
+            // Initialize compact mode on page load
+            function initCompactMode() {
+                const savedPreference = localStorage.getItem('compact-mode-preference') || 'normal';
+                currentCompactModePreference = savedPreference;
+                applyCompactMode(savedPreference);
+            }
+
             // Load and save user preferences
             async function loadPreferences() {
                 try {
@@ -5445,6 +5659,20 @@ async def root():
 
                             // Update hidden input
                             document.getElementById('darkModePreference').value = settings.dark_mode_preference;
+                        }
+
+                        // Load and apply compact mode preference
+                        if (settings.compact_mode_preference) {
+                            currentCompactModePreference = settings.compact_mode_preference;
+                            applyCompactMode(settings.compact_mode_preference);
+
+                            // Set active radio button
+                            document.querySelectorAll('input[name="compactMode"]').forEach(radio => {
+                                radio.checked = (radio.value === settings.compact_mode_preference);
+                            });
+
+                            // Update hidden input
+                            document.getElementById('compactModePreference').value = settings.compact_mode_preference;
                         }
 
                         // Load auto-search fallback setting
@@ -5575,6 +5803,7 @@ async def root():
                 // Appearance options
                 const primaryColor = selectedPrimaryColor || document.getElementById('primaryColor').value;
                 const darkModePreference = currentDarkModePreference || document.getElementById('darkModePreference').value;
+                const compactModePreference = currentCompactModePreference || document.getElementById('compactModePreference').value;
 
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
@@ -5643,6 +5872,7 @@ async def root():
                         // Appearance options
                         primary_color: primaryColor,
                         dark_mode_preference: darkModePreference,
+                        compact_mode_preference: compactModePreference,
                     })
                 }).catch(err => {
                     console.error('Failed to save settings to server config:', err);
@@ -6008,7 +6238,8 @@ async def root():
 
             // Load albums and preferences on page load
             document.addEventListener('DOMContentLoaded', () => {
-                initDarkMode();  // Initialize theme first for no flash
+                initDarkMode();     // Initialize theme first for no flash
+                initCompactMode();  // Initialize compact mode
 
                 // Set initial color swatch border
                 const activeSwatch = document.querySelector('.color-swatch.active');
@@ -6642,6 +6873,8 @@ async def save_all_settings_config(request_data: dict):
         config["primary_color"] = request_data["primary_color"]
     if "dark_mode_preference" in request_data:
         config["dark_mode_preference"] = request_data["dark_mode_preference"]
+    if "compact_mode_preference" in request_data:
+        config["compact_mode_preference"] = request_data["compact_mode_preference"]
 
     # Save to disk
     save_webui_config(config)
@@ -6703,6 +6936,7 @@ async def get_all_settings_config():
             # Appearance options
             "primary_color": config.get("primary_color", "#007aff"),
             "dark_mode_preference": config.get("dark_mode_preference", "auto"),
+            "compact_mode_preference": config.get("compact_mode_preference", "normal"),
         }
     }
 
