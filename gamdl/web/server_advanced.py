@@ -1303,15 +1303,19 @@ async def root():
             /* Library Browser Styles */
             .nav-tabs {
                 display: flex;
-                gap: 10px;
+                gap: 4px;
                 margin-bottom: 20px;
-                border-bottom: 2px solid #e0e0e0;
-                padding-bottom: 0;
+                padding: 4px;
+                background: #f0f0f0;
+                border-radius: 8px;
                 overflow-x: auto;
                 overflow-y: hidden;
                 flex-wrap: nowrap;
                 scroll-behavior: smooth;
                 -webkit-overflow-scrolling: touch;
+                touch-action: pan-x;
+                width: fit-content;
+                max-width: 100%;
             }
             /* Scrollbar styling for desktop */
             .nav-tabs::-webkit-scrollbar {
@@ -1321,33 +1325,55 @@ async def root():
                 background: transparent;
             }
             .nav-tabs::-webkit-scrollbar-thumb {
-                background: #ccc;
+                background: #c7c7cc;
                 border-radius: 2px;
             }
             .nav-tabs::-webkit-scrollbar-thumb:hover {
-                background: #999;
+                background: #b0b0b5;
             }
             .nav-tab {
-                padding: 10px 20px;
-                background: none;
+                padding: 8px 16px;
+                background: transparent;
                 border: none;
+                border-radius: 6px;
                 cursor: pointer;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 500;
                 color: #666;
-                border-bottom: 2px solid transparent;
-                margin-bottom: -2px;
-                transition: all 0.2s;
+                transition: all 0.2s ease-out;
                 white-space: nowrap;
                 flex-shrink: 0;
+                -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
             }
-            .nav-tab:hover {
-                color: #007aff;
-                background: #f0f0f0;
+            /* Desktop-specific hover - only show on non-touch devices */
+            @media (hover: hover) and (pointer: fine) {
+                .nav-tab:hover {
+                    color: #007aff;
+                }
+                .nav-tab:not(.active):hover {
+                    background: rgba(0, 122, 255, 0.1);
+                }
+            }
+            .nav-tab:not(.active):active {
+                background: transparent;
+            }
+            .nav-tab:not(.active):focus,
+            .nav-tab:not(.active):focus-visible {
+                background: transparent;
+                outline: none;
             }
             .nav-tab.active {
-                color: #007aff;
-                border-bottom-color: #007aff;
+                background: #007aff;
+                color: #ffffff;
+                font-weight: 600;
+            }
+            .nav-tab.active:hover {
+                background: #007aff;
+                color: #ffffff;
+            }
+            .nav-tab.active:active {
+                background: #0051d5;
             }
             .tab-content {
                 display: none;
@@ -2458,15 +2484,22 @@ async def root():
                 .nav-tabs {
                     scrollbar-width: none;
                     -ms-overflow-style: none;
+                    gap: 3px;
+                    padding: 3px;
                 }
                 .nav-tabs::-webkit-scrollbar {
                     display: none;
                 }
 
-                /* Slightly smaller tabs on mobile */
+                /* Smaller, tighter tabs on mobile */
                 .nav-tab {
-                    padding: 8px 16px;
+                    padding: 6px 12px;
                     font-size: 14px;
+                }
+
+                /* Add bottom padding to views to prevent bottom nav overlap */
+                .view-section {
+                    padding-bottom: 80px;
                 }
             }
 
@@ -2554,9 +2587,9 @@ async def root():
 
                 <!-- Library Type Tabs -->
                 <div class="nav-tabs">
-                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)">Albums</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)">Playlists</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)">Songs</button>
+                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)" ontouchstart="">Albums</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)" ontouchstart="">Playlists</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)" ontouchstart="">Songs</button>
                 </div>
 
                 <!-- Albums Tab -->
@@ -2880,13 +2913,13 @@ async def root():
 
                 <!-- Search Result Tabs -->
                 <div class="nav-tabs" style="margin-top: 20px;">
-                    <button class="nav-tab active" onclick="switchSearchTab('all', this)">All</button>
-                    <button class="nav-tab" onclick="switchSearchTab('songs', this)">Songs</button>
-                    <button class="nav-tab" onclick="switchSearchTab('albums', this)">Albums</button>
-                    <button class="nav-tab" onclick="switchSearchTab('artists', this)">Artists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)">Playlists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)">Music Videos</button>
-                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)">Podcasts</button>
+                    <button class="nav-tab active" onclick="switchSearchTab('all', this)" ontouchstart="">All</button>
+                    <button class="nav-tab" onclick="switchSearchTab('songs', this)" ontouchstart="">Songs</button>
+                    <button class="nav-tab" onclick="switchSearchTab('albums', this)" ontouchstart="">Albums</button>
+                    <button class="nav-tab" onclick="switchSearchTab('artists', this)" ontouchstart="">Artists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)" ontouchstart="">Playlists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)" ontouchstart="">Music Videos</button>
+                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)" ontouchstart="">Podcasts</button>
                 </div>
 
                 <!-- Error Display -->
@@ -3449,6 +3482,7 @@ async def root():
                 });
                 if (clickedElement) {
                     clickedElement.classList.add('active');
+                    clickedElement.blur();
                 }
 
                 // Show/hide tab content (scoped to Library view only)
@@ -3636,9 +3670,9 @@ async def root():
                 if (type === 'song') {
                     subtitle.textContent = `${item.artist} • ${item.album}`;
                 } else if (type === 'album') {
-                    subtitle.textContent = `${item.artist} • ${item.trackCount} songs`;
+                    subtitle.textContent = `${item.artist}`;
                 } else if (type === 'playlist') {
-                    subtitle.textContent = `${item.trackCount} songs`;
+                    subtitle.textContent = '';
                 }
 
                 // Create download button for albums/playlists
@@ -4227,7 +4261,7 @@ async def root():
                         // Subtitle
                         const subtitle = document.createElement('div');
                         subtitle.className = 'library-item-subtitle';
-                        subtitle.textContent = `${album.trackCount} tracks`;
+                        subtitle.textContent = album.artist;
                         item.appendChild(subtitle);
 
                         albumsGrid.appendChild(item);
@@ -4372,6 +4406,7 @@ async def root():
                 tabs.forEach(t => t.classList.remove('active'));
                 if (clickedElement) {
                     clickedElement.classList.add('active');
+                    clickedElement.blur();
                     // Auto-scroll the active tab into view
                     clickedElement.scrollIntoView({
                         behavior: 'smooth',
@@ -5273,7 +5308,7 @@ async def root():
                     allPlaylists.forEach(playlist => {
                         const option = document.createElement('option');
                         option.value = playlist.id;
-                        option.textContent = `${playlist.name} (${playlist.trackCount} tracks)`;
+                        option.textContent = playlist.name;
                         option.dataset.playlistName = playlist.name;
                         dropdown.appendChild(option);
                     });
