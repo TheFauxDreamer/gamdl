@@ -640,6 +640,42 @@ async def check_monitored_playlist():
             pass
 
 
+async def auto_clear_completed_queue():
+    """Scheduled task to automatically clear completed queue items."""
+    global download_queue
+
+    config = load_webui_config()
+
+    # Check if auto-clear is enabled
+    if not config.get("auto_clear_queue", False):
+        logger.debug("Auto-clear queue is disabled, skipping")
+        return
+
+    # Safety check: Only clear if there are completed items
+    completed_count = 0
+    with queue_lock:
+        completed_count = sum(
+            1 for item in download_queue
+            if item.status in [QueueItemStatus.COMPLETED, QueueItemStatus.FAILED, QueueItemStatus.CANCELLED]
+        )
+
+    if completed_count == 0:
+        logger.debug("No completed items to clear")
+        return
+
+    # Clear completed items
+    logger.info(f"Auto-clearing {completed_count} completed queue items")
+    with queue_lock:
+        download_queue = [
+            item for item in download_queue
+            if item.status in [QueueItemStatus.QUEUED, QueueItemStatus.DOWNLOADING]
+        ]
+
+    # Broadcast update to all clients
+    await broadcast_queue_update()
+    logger.info("Auto-clear completed successfully")
+
+
 def start_monitor_scheduler():
     """Initialize and start the monitoring scheduler."""
     global monitor_scheduler
@@ -649,15 +685,30 @@ def start_monitor_scheduler():
             logger.info("Monitor scheduler already running")
             return
 
+        # Load config to get intervals
+        config = load_webui_config()
+
         monitor_scheduler = AsyncIOScheduler()
+
+        # Add playlist monitoring job
         monitor_scheduler.add_job(
             check_monitored_playlist,
             trigger=IntervalTrigger(minutes=60),
             id='playlist_monitor',
             replace_existing=True
         )
+
+        # Add auto-clear queue job
+        auto_clear_interval = config.get("auto_clear_interval", 60)
+        monitor_scheduler.add_job(
+            auto_clear_completed_queue,
+            trigger=IntervalTrigger(minutes=auto_clear_interval),
+            id='auto_clear_queue',
+            replace_existing=True
+        )
+
         monitor_scheduler.start()
-        logger.info("Monitor scheduler started successfully (checking every 60 minutes)")
+        logger.info(f"Monitor scheduler started successfully (playlist check: 60min, auto-clear: {auto_clear_interval}min)")
     except Exception as e:
         logger.error(f"Failed to start monitor scheduler: {e}", exc_info=True)
 
@@ -670,9 +721,41 @@ def stop_monitor_scheduler():
         if monitor_scheduler is not None:
             monitor_scheduler.shutdown(wait=False)
             monitor_scheduler = None
-            logger.info("Monitor scheduler stopped")
+            logger.info("Monitor scheduler stopped (playlist monitoring and auto-clear)")
     except Exception as e:
         logger.error(f"Failed to stop monitor scheduler: {e}")
+
+
+def update_auto_clear_schedule():
+    """Update the auto-clear job interval when settings change."""
+    global monitor_scheduler
+
+    if monitor_scheduler is None or not monitor_scheduler.running:
+        logger.debug("Scheduler not running, cannot update auto-clear schedule")
+        return
+
+    config = load_webui_config()
+    auto_clear_enabled = config.get("auto_clear_queue", False)
+    auto_clear_interval = config.get("auto_clear_interval", 60)
+
+    # Remove existing auto-clear job
+    try:
+        monitor_scheduler.remove_job("auto_clear_queue")
+        logger.debug("Removed existing auto-clear job")
+    except Exception as e:
+        logger.debug(f"No existing auto-clear job to remove: {e}")
+
+    # Re-add with new interval (only if enabled)
+    if auto_clear_enabled:
+        monitor_scheduler.add_job(
+            auto_clear_completed_queue,
+            trigger=IntervalTrigger(minutes=auto_clear_interval),
+            id="auto_clear_queue",
+            replace_existing=True,
+        )
+        logger.info(f"Updated auto-clear schedule to {auto_clear_interval} minutes")
+    else:
+        logger.info("Auto-clear disabled, job not re-added")
 
 
 # Queue Management Functions
@@ -3159,7 +3242,31 @@ async def root():
                     </div>
                 </div>
 
-                <h3>Queue Behavior</h3>
+                <h3>Queue Options</h3>
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="autoClearQueue" name="autoClearQueue" onchange="toggleAutoClearSettings()">
+                        <span>Auto-clear completed queue items</span>
+                    </label>
+                    <small>Automatically remove completed and failed items from the queue after a set time</small>
+                </div>
+
+                <div id="autoClearSettings" style="display: none;">
+                    <div class="form-group">
+                        <label for="autoClearInterval">Clear Interval</label>
+                        <select id="autoClearInterval" name="autoClearInterval">
+                            <option value="30">Every 30 minutes</option>
+                            <option value="60" selected>Every 1 hour</option>
+                            <option value="180">Every 3 hours</option>
+                            <option value="360">Every 6 hours</option>
+                            <option value="720">Every 12 hours</option>
+                            <option value="1440">Every 24 hours</option>
+                            <option value="2880">Every 48 hours</option>
+                        </select>
+                        <small>How often to automatically clear completed items</small>
+                    </div>
+                </div>
+
                 <div class="form-group checkbox-group">
                     <label>
                         <input type="checkbox" id="continueOnError" name="continueOnError">
@@ -4244,26 +4351,32 @@ async def root():
                     'podcasts': 0
                 };
 
-                document.getElementById('allLoading').style.display = 'block';
-                document.getElementById('allGrid').innerHTML = '';
-                document.getElementById('allEmpty').style.display = 'none';
-                document.getElementById('searchError').style.display = 'none';
+                // If on a specific tab, load results for that tab
+                if (currentSearchTab && currentSearchTab !== 'all') {
+                    await loadSearchTabResults(currentSearchTab);
+                } else {
+                    // On "All" tab, show overview of all types
+                    document.getElementById('allLoading').style.display = 'block';
+                    document.getElementById('allGrid').innerHTML = '';
+                    document.getElementById('allEmpty').style.display = 'none';
+                    document.getElementById('searchError').style.display = 'none';
 
-                try {
-                    const response = await fetch(`/api/search?term=${encodeURIComponent(query)}&limit=25`);
+                    try {
+                        const response = await fetch(`/api/search?term=${encodeURIComponent(query)}&limit=25`);
 
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Search failed');
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Search failed');
+                        }
+
+                        const data = await response.json();
+                        displayAllResults(data);
+
+                    } catch (error) {
+                        document.getElementById('allLoading').style.display = 'none';
+                        document.getElementById('searchError').textContent = error.message;
+                        document.getElementById('searchError').style.display = 'block';
                     }
-
-                    const data = await response.json();
-                    displayAllResults(data);
-
-                } catch (error) {
-                    document.getElementById('allLoading').style.display = 'none';
-                    document.getElementById('searchError').textContent = error.message;
-                    document.getElementById('searchError').style.display = 'block';
                 }
             }
 
@@ -5281,8 +5394,17 @@ async def root():
                             document.getElementById('autoSearchFallback').checked = settings.auto_search_fallback;
                         }
 
+                        // Load auto-clear queue settings
+                        if (settings.auto_clear_queue !== undefined) {
+                            document.getElementById('autoClearQueue').checked = settings.auto_clear_queue;
+                        }
+                        if (settings.auto_clear_interval !== undefined) {
+                            document.getElementById('autoClearInterval').value = settings.auto_clear_interval.toString();
+                        }
+
                         console.log('Settings loaded from server');
                         toggleRetryDelaySettings();  // Update visibility after loading settings
+                        toggleAutoClearSettings();  // Update auto-clear dropdown visibility
                         return;
                     }
                 } catch (error) {
@@ -5292,6 +5414,7 @@ async def root():
                 // Fallback to localStorage if server request fails
                 loadPreferencesFromLocalStorage();
                 toggleRetryDelaySettings();  // Update visibility after loading settings
+                toggleAutoClearSettings();  // Update auto-clear dropdown visibility
             }
 
             // Fallback function for localStorage (renamed from original loadPreferences)
@@ -5316,6 +5439,10 @@ async def root():
                 const includeVideosInDiscography = localStorage.getItem('gamdl_include_videos_in_discography');
                 const savePlaylist = localStorage.getItem('gamdl_save_playlist');
 
+                // Queue options
+                const autoClearQueue = localStorage.getItem('gamdl_auto_clear_queue');
+                const autoClearInterval = localStorage.getItem('gamdl_auto_clear_interval');
+
                 // Retry/delay options
                 const enableRetryDelay = localStorage.getItem('gamdl_enable_retry_delay');
                 const maxRetries = localStorage.getItem('gamdl_max_retries');
@@ -5339,6 +5466,8 @@ async def root():
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
                 if (includeVideosInDiscography === 'true') document.getElementById('includeVideosInDiscography').checked = true;
                 if (savePlaylist === 'true') document.getElementById('savePlaylist').checked = true;
+                if (autoClearQueue) document.getElementById('autoClearQueue').checked = autoClearQueue === 'true';
+                if (autoClearInterval) document.getElementById('autoClearInterval').value = autoClearInterval;
                 if (enableRetryDelay !== null) document.getElementById('enableRetryDelay').checked = enableRetryDelay === 'true';
                 if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
@@ -5370,6 +5499,10 @@ async def root():
                 const includeVideosInDiscography = document.getElementById('includeVideosInDiscography').checked;
                 const savePlaylist = document.getElementById('savePlaylist').checked;
                 const autoSearchFallback = document.getElementById('autoSearchFallback').checked;
+
+                // Queue options
+                const autoClearQueue = document.getElementById('autoClearQueue').checked;
+                const autoClearInterval = document.getElementById('autoClearInterval').value;
 
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
@@ -5407,6 +5540,8 @@ async def root():
                 localStorage.setItem('gamdl_primary_color', primaryColor);
                 localStorage.setItem('gamdl_dark_mode_preference', darkModePreference);
                 localStorage.setItem('gamdl_auto_search_fallback', autoSearchFallback);
+                localStorage.setItem('gamdl_auto_clear_queue', autoClearQueue);
+                localStorage.setItem('gamdl_auto_clear_interval', autoClearInterval);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -5432,6 +5567,10 @@ async def root():
                         extra_tags: extraTags,
                         save_playlist: savePlaylist,
                         auto_search_fallback: autoSearchFallback,
+
+                        // Queue options
+                        auto_clear_queue: autoClearQueue,
+                        auto_clear_interval: parseInt(autoClearInterval),
 
                         // Retry/delay options
                         enable_retry_delay: enableRetryDelay,
@@ -5465,6 +5604,15 @@ async def root():
                     settingsContainer.style.display = 'block';
                 } else {
                     settingsContainer.style.display = 'none';
+                }
+            }
+
+            function toggleAutoClearSettings() {
+                const checkbox = document.getElementById('autoClearQueue');
+                const settingsContainer = document.getElementById('autoClearSettings');
+
+                if (checkbox && settingsContainer) {
+                    settingsContainer.style.display = checkbox.checked ? 'block' : 'none';
                 }
             }
 
@@ -6401,6 +6549,12 @@ async def save_all_settings_config(request_data: dict):
     if "auto_search_fallback" in request_data:
         config["auto_search_fallback"] = request_data["auto_search_fallback"]
 
+    # Queue options
+    if "auto_clear_queue" in request_data:
+        config["auto_clear_queue"] = request_data["auto_clear_queue"]
+    if "auto_clear_interval" in request_data:
+        config["auto_clear_interval"] = request_data["auto_clear_interval"]
+
     # Retry/delay options
     if "enable_retry_delay" in request_data:
         config["enable_retry_delay"] = request_data["enable_retry_delay"]
@@ -6425,6 +6579,10 @@ async def save_all_settings_config(request_data: dict):
 
     # Save to disk
     save_webui_config(config)
+
+    # Update auto-clear schedule if settings changed
+    if "auto_clear_queue" in request_data or "auto_clear_interval" in request_data:
+        update_auto_clear_schedule()
 
     return {"success": True, "message": "All settings saved to configuration"}
 
@@ -6461,6 +6619,10 @@ async def get_all_settings_config():
             "include_videos_in_discography": config.get("include_videos_in_discography", False),
             "save_playlist": config.get("save_playlist", False),
             "auto_search_fallback": config.get("auto_search_fallback", False),
+
+            # Queue options
+            "auto_clear_queue": config.get("auto_clear_queue", False),
+            "auto_clear_interval": config.get("auto_clear_interval", 60),  # Default: 1 hour
 
             # Retry/delay options
             "enable_retry_delay": config.get("enable_retry_delay", True),
