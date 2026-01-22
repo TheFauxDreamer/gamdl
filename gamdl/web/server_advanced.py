@@ -3115,6 +3115,15 @@ async def root():
                     <small>Creates playlist files with relative paths to downloaded tracks</small>
                 </div>
 
+                <h3>Search Options</h3>
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="autoSearchFallback" name="autoSearchFallback">
+                        <span>Auto-search fallback for library downloads</span>
+                    </label>
+                    <small>If a library album download fails to find a catalog ID, automatically search for it in the catalog and retry</small>
+                </div>
+
                 <h3>Retry & Delay Options</h3>
                 <div class="form-group checkbox-group">
                     <label>
@@ -5267,6 +5276,11 @@ async def root():
                             document.getElementById('darkModePreference').value = settings.dark_mode_preference;
                         }
 
+                        // Load auto-search fallback setting
+                        if (settings.auto_search_fallback !== undefined) {
+                            document.getElementById('autoSearchFallback').checked = settings.auto_search_fallback;
+                        }
+
                         console.log('Settings loaded from server');
                         toggleRetryDelaySettings();  // Update visibility after loading settings
                         return;
@@ -5355,6 +5369,7 @@ async def root():
                 const extraTags = document.getElementById('extraTags').checked;
                 const includeVideosInDiscography = document.getElementById('includeVideosInDiscography').checked;
                 const savePlaylist = document.getElementById('savePlaylist').checked;
+                const autoSearchFallback = document.getElementById('autoSearchFallback').checked;
 
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
@@ -5391,6 +5406,7 @@ async def root():
                 localStorage.setItem('gamdl_continue_on_error', continueOnError);
                 localStorage.setItem('gamdl_primary_color', primaryColor);
                 localStorage.setItem('gamdl_dark_mode_preference', darkModePreference);
+                localStorage.setItem('gamdl_auto_search_fallback', autoSearchFallback);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -5415,6 +5431,7 @@ async def root():
                         no_lyrics: noLyrics,
                         extra_tags: extraTags,
                         save_playlist: savePlaylist,
+                        auto_search_fallback: autoSearchFallback,
 
                         // Retry/delay options
                         enable_retry_delay: enableRetryDelay,
@@ -6381,6 +6398,8 @@ async def save_all_settings_config(request_data: dict):
         config["extra_tags"] = request_data["extra_tags"]
     if "save_playlist" in request_data:
         config["save_playlist"] = request_data["save_playlist"]
+    if "auto_search_fallback" in request_data:
+        config["auto_search_fallback"] = request_data["auto_search_fallback"]
 
     # Retry/delay options
     if "enable_retry_delay" in request_data:
@@ -6441,6 +6460,7 @@ async def get_all_settings_config():
             "extra_tags": config.get("extra_tags", False),
             "include_videos_in_discography": config.get("include_videos_in_discography", False),
             "save_playlist": config.get("save_playlist", False),
+            "auto_search_fallback": config.get("auto_search_fallback", False),
 
             # Retry/delay options
             "enable_retry_delay": config.get("enable_retry_delay", True),
@@ -7352,6 +7372,9 @@ async def download_from_library(request_data: dict):
     if download_full:
         # For full download, we need the catalog ID
         # First, get the library item to extract the catalog reference
+        # Load config for auto-search fallback setting
+        config = load_webui_config()
+
         try:
             if media_type == "album":
                 library_response = await api.get_library_album(library_id)
@@ -7420,14 +7443,46 @@ async def download_from_library(request_data: dict):
                         else:
                             logger.warning("No tracks found in relationships")
 
-                    # Use the catalog ID if we found one
+                    # Validate catalog ID if found
                     if catalog_id:
-                        # Use catalog URL for full download
-                        url = f"https://music.apple.com/{storefront}/{media_type}/{catalog_id}"
-                        logger.info(f"Using catalog URL for full download: {url}")
-                    else:
-                        # Fallback to library URL if no catalog reference found
-                        logger.warning("Could not find catalog ID via any method, using library URL")
+                        # Validate catalog ID format (should be numeric, not library ID)
+                        if not catalog_id.startswith('l.') and not catalog_id.startswith('p.'):
+                            url = f"https://music.apple.com/{storefront}/{media_type}/{catalog_id}"
+                            logger.info(f"Using validated catalog URL for full download: {url}")
+                        else:
+                            logger.warning(f"Invalid catalog ID format: {catalog_id}, attempting fallback")
+                            catalog_id = None
+
+                    # If no catalog ID and auto-search fallback is enabled
+                    if not catalog_id and config.get('auto_search_fallback', False):
+                        logger.info("Auto-search fallback enabled, searching for album in catalog")
+                        try:
+                            # Extract album name and artist from library item
+                            item_attributes = item_data.get('attributes', {})
+                            album_name = item_attributes.get('name', '')
+                            artist_name = item_attributes.get('artistName', '')
+
+                            if album_name:
+                                # Search for album in catalog
+                                search_query = f"{album_name} {artist_name}".strip()
+                                logger.info(f"Searching for: {search_query}")
+                                search_results = await api.get_search_results(search_query, types=['albums'], limit=5)
+
+                                # Find best match from search results
+                                albums = search_results.get('results', {}).get('albums', {}).get('data', [])
+                                if albums:
+                                    # Use first result (best match)
+                                    catalog_id = albums[0].get('id')
+                                    url = f"https://music.apple.com/{storefront}/{media_type}/{catalog_id}"
+                                    logger.info(f"Auto-search found catalog album: {url}")
+                                else:
+                                    logger.warning("Auto-search found no results")
+                        except Exception as e:
+                            logger.error(f"Auto-search fallback failed: {e}")
+
+                    # Final fallback to library URL
+                    if not catalog_id:
+                        logger.warning("Using library URL as final fallback")
                         url = f"https://music.apple.com/{storefront}/library/{media_type}s/{library_id}"
                 else:
                     logger.warning("No data in library response, using library URL")
