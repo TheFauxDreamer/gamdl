@@ -7463,18 +7463,40 @@ async def download_from_library(request_data: dict):
                             artist_name = item_attributes.get('artistName', '')
 
                             if album_name:
-                                # Search for album in catalog
-                                search_query = f"{album_name} {artist_name}".strip()
+                                # Build search query - avoid duplicate if album name == artist name
+                                if album_name.lower() == artist_name.lower():
+                                    search_query = album_name
+                                    logger.info(f"Album name matches artist name, using single term: {search_query}")
+                                else:
+                                    search_query = f"{album_name} {artist_name}".strip()
+
                                 logger.info(f"Searching for: {search_query}")
                                 search_results = await api.get_search_results(search_query, types=['albums'], limit=5)
 
-                                # Find best match from search results
+                                # Find best match from search results by comparing album name and artist
                                 albums = search_results.get('results', {}).get('albums', {}).get('data', [])
                                 if albums:
-                                    # Use first result (best match)
-                                    catalog_id = albums[0].get('id')
+                                    # Try to find exact match first
+                                    exact_match = None
+                                    for album in albums:
+                                        album_attrs = album.get('attributes', {})
+                                        search_album_name = album_attrs.get('name', '')
+                                        search_artist_name = album_attrs.get('artistName', '')
+
+                                        if (search_album_name.lower() == album_name.lower() and
+                                            search_artist_name.lower() == artist_name.lower()):
+                                            exact_match = album
+                                            logger.info(f"Found exact match: {search_album_name} by {search_artist_name}")
+                                            break
+
+                                    # Use exact match if found, otherwise use first result
+                                    selected_album = exact_match if exact_match else albums[0]
+                                    catalog_id = selected_album.get('id')
                                     url = f"https://music.apple.com/{storefront}/{media_type}/{catalog_id}"
-                                    logger.info(f"Auto-search found catalog album: {url}")
+
+                                    selected_name = selected_album.get('attributes', {}).get('name', '')
+                                    selected_artist = selected_album.get('attributes', {}).get('artistName', '')
+                                    logger.info(f"Auto-search selected: '{selected_name}' by '{selected_artist}' (ID: {catalog_id})")
                                 else:
                                     logger.warning("Auto-search found no results")
                         except Exception as e:
