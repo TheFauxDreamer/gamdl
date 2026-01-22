@@ -2343,9 +2343,21 @@ async def root():
                 flex-shrink: 0;
             }
 
+            .activity-item .activity-icon svg {
+                display: block;
+                width: 16px;
+                height: 16px;
+                stroke: var(--text-secondary);
+            }
+
+            /* Light mode specific colors */
             .activity-item.new-tracks .activity-icon {
                 background: #e8f5e9;
                 color: #4CAF50;
+            }
+
+            .activity-item.new-tracks .activity-icon svg {
+                stroke: #4CAF50;
             }
 
             .activity-item.removed-tracks .activity-icon {
@@ -2353,9 +2365,30 @@ async def root():
                 color: #ff9800;
             }
 
+            .activity-item.removed-tracks .activity-icon svg {
+                stroke: #ff9800;
+            }
+
             .activity-item.error .activity-icon {
                 background: #ffebee;
                 color: #f44336;
+            }
+
+            .activity-item.error .activity-icon svg {
+                stroke: #f44336;
+            }
+
+            /* Dark mode adjustments */
+            [data-theme="dark"] .activity-item.new-tracks .activity-icon {
+                background: rgba(76, 175, 80, 0.2);
+            }
+
+            [data-theme="dark"] .activity-item.removed-tracks .activity-icon {
+                background: rgba(255, 152, 0, 0.2);
+            }
+
+            [data-theme="dark"] .activity-item.error .activity-icon {
+                background: rgba(244, 67, 54, 0.2);
             }
 
             .activity-item .activity-content {
@@ -6505,7 +6538,7 @@ async def root():
                 let html = '';
                 events.forEach(event => {
                     const eventClass = event.event_type.replace('_', '-');
-                    const icon = getEventIcon(event.event_type);
+                    const icon = getActivityIconSVG(event.event_type, event.message);
                     const time = new Date(event.timestamp);
 
                     // Build track list HTML if tracks are present
@@ -6540,19 +6573,33 @@ async def root():
                 logContainer.innerHTML = html;
             }
 
-            function getEventIcon(eventType) {
-                const icons = {
-                    'new_tracks': '+',
-                    'removed_tracks': '−',
-                    'downloads_completed': '✓',
-                    'downloaded': '✓',
-                    'started': '▶',
-                    'stopped': '■',
-                    'toggle': '⚙',
-                    'error': '!',
-                    'check': '↻'
+            function getActivityIconSVG(eventType, message) {
+                const size = 16;
+                const strokeWidth = 2;
+
+                // Special handling for toggle event - determine pause vs play based on message
+                if (eventType === 'toggle') {
+                    if (message && message.toLowerCase().includes('off')) {
+                        // Pause icon (monitoring turned off)
+                        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`;
+                    } else {
+                        // Play icon (monitoring turned on/resumed)
+                        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
+                    }
+                }
+
+                const svgs = {
+                    'new_tracks': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
+                    'removed_tracks': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
+                    'downloads_completed': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+                    'downloaded': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+                    'started': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
+                    'stopped': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12"></rect></svg>`,
+                    'error': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`,
+                    'check': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
                 };
-                return icons[eventType] || '•';
+
+                return svgs[eventType] || `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3"></circle></svg>`;
             }
 
             function formatRelativeTime(date) {
