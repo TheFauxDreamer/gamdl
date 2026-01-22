@@ -26,13 +26,13 @@ These work well enough that I haven't encountered major issues or bugs that brea
 - Apple Podcast Support, including bulk episode download
 - Download part of an Artists Discography
 - Improved Download Queue information
+- Mobile support for webUI
+- Colour accents & dark/light mode support
 
 ## ⚠️ WIP Features
 These are in "active" development and in varying states of useability. (Check the branches for these features)
-- mobile support for webUI (check up on it from your phone)
-- A better UI (I guess this is part of the mobile support)
-- Colour accents & dark/light mode support
-- Fix the "null songs" count in WebUI playlists
+- Fixes for failed library downloads
+- Look at fallback for these failures
 
 
 ## 🗓️ Future Features
