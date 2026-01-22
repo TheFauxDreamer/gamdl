@@ -1119,6 +1119,13 @@ async def root():
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
         <title>gamdl Advanced Web UI</title>
         <style>
+            :root {
+                --primary-color: #007aff;
+                --primary-color-hover: #0051d5;
+                --primary-color-light: rgba(0, 122, 255, 0.1);
+                --primary-color-shadow: rgba(0, 122, 255, 0.4);
+            }
+
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
                 max-width: 1200px;
@@ -1191,7 +1198,7 @@ async def root():
                 font-family: monospace;
             }
             button {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
                 border: none;
                 padding: 12px 24px;
@@ -1296,7 +1303,7 @@ async def root():
             .stat-value {
                 font-size: 24px;
                 font-weight: bold;
-                color: #007aff;
+                color: var(--primary-color);
             }
             .stat-label {
                 font-size: 12px;
@@ -1378,7 +1385,7 @@ async def root():
             /* Desktop-specific hover - only show on non-touch devices */
             @media (hover: hover) and (pointer: fine) {
                 .nav-tab:hover {
-                    color: #007aff;
+                    color: var(--primary-color);
                 }
                 .nav-tab:not(.active):hover {
                     background: rgba(0, 122, 255, 0.1);
@@ -1393,12 +1400,12 @@ async def root():
                 outline: none;
             }
             .nav-tab.active {
-                background: #007aff;
+                background: var(--primary-color);
                 color: #ffffff;
                 font-weight: 600;
             }
             .nav-tab.active:hover {
-                background: #007aff;
+                background: var(--primary-color);
                 color: #ffffff;
             }
             .nav-tab.active:active {
@@ -1479,9 +1486,9 @@ async def root():
                 font-size: 12px;
             }
             .library-item .btn-primary {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
-                border: 1px solid #007aff;
+                border: 1px solid var(--primary-color);
             }
             .library-item .btn-primary:hover {
                 background: #0056b3;
@@ -1489,8 +1496,8 @@ async def root():
             }
             .library-item .btn-secondary {
                 background: white;
-                color: #007aff;
-                border: 1px solid #007aff;
+                color: var(--primary-color);
+                border: 1px solid var(--primary-color);
             }
             .library-item .btn-secondary:hover {
                 background: #f0f0f0;
@@ -1532,7 +1539,7 @@ async def root():
                 width: 40px;
                 height: 40px;
                 border: 4px solid #f3f3f3;
-                border-top: 4px solid #007aff;
+                border-top: 4px solid var(--primary-color);
                 border-radius: 50%;
                 animation: spin 1s linear infinite;
                 margin-bottom: 15px;
@@ -1584,9 +1591,9 @@ async def root():
                 justify-content: space-between;
                 align-items: center;
                 padding: 15px;
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
-                border-bottom: 1px solid #0051d5;
+                border-bottom: 1px solid var(--primary-color-hover);
             }
             .queue-header h3 {
                 margin: 0;
@@ -1620,7 +1627,7 @@ async def root():
             }
             .queue-control-btn:hover {
                 background: #f0f0f0;
-                border-color: #007aff;
+                border-color: var(--primary-color);
             }
             .queue-control-btn.clear-btn {
                 color: #ff3b30;
@@ -1654,7 +1661,7 @@ async def root():
             .queue-stat-value {
                 font-size: 20px;
                 font-weight: bold;
-                color: #007aff;
+                color: var(--primary-color);
             }
             .queue-list {
                 flex: 1;
@@ -1673,7 +1680,7 @@ async def root():
                 box-shadow: 0 2px 8px rgba(0,0,0,0.1);
             }
             .queue-item.queued {
-                border-left: 4px solid #007aff;
+                border-left: 4px solid var(--primary-color);
             }
             .queue-item.downloading {
                 border-left: 4px solid #34c759;
@@ -1737,7 +1744,7 @@ async def root():
                 display: inline-block;
             }
             .queue-item-status-icon.queued {
-                background: #007aff;
+                background: var(--primary-color);
             }
             .queue-item-status-icon.downloading {
                 background: #34c759;
@@ -1795,7 +1802,7 @@ async def root():
             }
             .queue-item-info {
                 font-size: 10px;
-                color: #007aff;
+                color: var(--primary-color);
                 margin-bottom: 4px;
             }
             .queue-item-progress {
@@ -1832,11 +1839,11 @@ async def root():
                 color: white;
             }
             .queue-item-view {
-                color: #007aff;
-                border-color: #007aff;
+                color: var(--primary-color);
+                border-color: var(--primary-color);
             }
             .queue-item-view:hover {
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
             }
 
@@ -1859,7 +1866,7 @@ async def root():
             }
 
             .search-container input:focus {
-                border-color: #007aff;
+                border-color: var(--primary-color);
             }
 
             .search-container button {
@@ -1999,8 +2006,8 @@ async def root():
 
             .playlist-dropdown:focus {
                 outline: none;
-                border-color: #007AFF;
-                box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px var(--primary-color-light);
             }
 
             .monitor-empty {
@@ -2211,6 +2218,50 @@ async def root():
                 margin-top: 2px;
             }
 
+            .color-theme-group {
+                margin-bottom: 30px;
+            }
+
+            .color-swatches {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+                gap: 12px;
+                margin-top: 15px;
+            }
+
+            .color-swatch {
+                background: #f5f5f5;
+                border: 2px solid transparent;
+                border-radius: 8px;
+                padding: 10px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                text-align: center;
+            }
+
+            .color-swatch:hover {
+                background: #eee;
+                transform: translateY(-2px);
+            }
+
+            .color-swatch.active {
+                border-color: #333;
+                background: #fff;
+            }
+
+            .swatch-color {
+                width: 100%;
+                height: 40px;
+                border-radius: 6px;
+                margin-bottom: 8px;
+            }
+
+            .swatch-name {
+                font-size: 13px;
+                font-weight: 500;
+                color: #333;
+            }
+
             .btn-danger {
                 background-color: #f44336;
                 color: white;
@@ -2252,11 +2303,11 @@ async def root():
                 width: 56px;
                 height: 56px;
                 border-radius: 50%;
-                background: #007aff;
+                background: var(--primary-color);
                 color: white;
                 border: none;
                 padding: 0;
-                box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4);
+                box-shadow: 0 4px 12px var(--primary-color-shadow);
                 cursor: pointer;
                 z-index: 998;
                 display: flex;
@@ -2402,7 +2453,7 @@ async def root():
                 }
 
                 .bottom-nav-item.active {
-                    color: #007aff;
+                    color: var(--primary-color);
                 }
 
                 .bottom-nav-item:active {
@@ -2418,7 +2469,7 @@ async def root():
 
                 .bottom-nav-item.active:hover {
                     background: none;
-                    color: #007aff;  /* Active tab stays blue on hover */
+                    color: var(--primary-color);  /* Active tab stays blue on hover */
                 }
 
                 /* Override any focus state backgrounds */
@@ -2431,7 +2482,7 @@ async def root():
                 /* Tap color fade animation */
                 @keyframes colorPulse {
                     0% {
-                        color: #007aff;
+                        color: var(--primary-color);
                     }
                     100% {
                         color: #666;
@@ -2579,6 +2630,20 @@ async def root():
                 .activity-track {
                     white-space: normal;
                     word-break: break-word;
+                }
+
+                /* Color swatches - smaller on mobile */
+                .color-swatches {
+                    grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+                    gap: 10px;
+                }
+
+                .swatch-color {
+                    height: 35px;
+                }
+
+                .swatch-name {
+                    font-size: 12px;
                 }
 
                 /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
@@ -2925,6 +2990,47 @@ async def root():
                         <span>Continue queue on errors</span>
                     </label>
                     <small>When enabled, the queue will continue processing even if items fail (after retries are exhausted). When disabled, the queue will pause on failures.</small>
+                </div>
+
+                <!-- Appearance Settings -->
+                <h3>Appearance</h3>
+
+                <div class="form-group color-theme-group">
+                    <label>Primary Color Theme</label>
+                    <small>Choose the color for buttons, active tabs, and highlights</small>
+
+                    <div class="color-swatches">
+                        <button type="button" class="color-swatch active" data-color="#007aff" data-name="Blue" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #007aff;"></div>
+                            <div class="swatch-name">Blue</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#8e44ad" data-name="Purple" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #8e44ad;"></div>
+                            <div class="swatch-name">Purple</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#34c759" data-name="Green" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #34c759;"></div>
+                            <div class="swatch-name">Green</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff9500" data-name="Orange" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff9500;"></div>
+                            <div class="swatch-name">Orange</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff2d55" data-name="Pink" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff2d55;"></div>
+                            <div class="swatch-name">Pink</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#5ac8fa" data-name="Teal" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #5ac8fa;"></div>
+                            <div class="swatch-name">Teal</div>
+                        </button>
+                        <button type="button" class="color-swatch" data-color="#ff3b30" data-name="Red" onclick="selectColorTheme(this)">
+                            <div class="swatch-color" style="background: #ff3b30;"></div>
+                            <div class="swatch-name">Red</div>
+                        </button>
+                    </div>
+
+                    <input type="hidden" id="primaryColor" name="primaryColor" value="#007aff">
                 </div>
 
                 <div class="button-group">
@@ -4788,6 +4894,64 @@ async def root():
                 document.getElementById('episodeModal').style.display = 'none';
             }
 
+            // Color theme management
+            let selectedPrimaryColor = '#007aff'; // Default
+
+            function selectColorTheme(button) {
+                // Remove active class from all swatches
+                document.querySelectorAll('.color-swatch').forEach(swatch => {
+                    swatch.classList.remove('active');
+                });
+
+                // Add active class to selected swatch
+                button.classList.add('active');
+
+                // Get selected color
+                const color = button.getAttribute('data-color');
+                selectedPrimaryColor = color;
+
+                // Update hidden input
+                document.getElementById('primaryColor').value = color;
+
+                // Apply color immediately (live preview)
+                applyPrimaryColor(color);
+            }
+
+            function applyPrimaryColor(color) {
+                // Calculate hover variant (darken by ~20%)
+                const hoverColor = darkenColor(color, 20);
+                const lightColor = hexToRGBA(color, 0.1);
+                const shadowColor = hexToRGBA(color, 0.4);
+
+                // Apply to CSS variables
+                document.documentElement.style.setProperty('--primary-color', color);
+                document.documentElement.style.setProperty('--primary-color-hover', hoverColor);
+                document.documentElement.style.setProperty('--primary-color-light', lightColor);
+                document.documentElement.style.setProperty('--primary-color-shadow', shadowColor);
+            }
+
+            function darkenColor(hex, percent) {
+                // Convert hex to RGB
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+
+                // Darken
+                const newR = Math.max(0, Math.floor(r * (100 - percent) / 100));
+                const newG = Math.max(0, Math.floor(g * (100 - percent) / 100));
+                const newB = Math.max(0, Math.floor(b * (100 - percent) / 100));
+
+                // Convert back to hex
+                return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`;
+            }
+
+            function hexToRGBA(hex, alpha) {
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+                return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+            }
+
             // Load and save user preferences
             async function loadPreferences() {
                 try {
@@ -4817,6 +4981,24 @@ async def root():
                         if (settings.song_delay !== undefined) document.getElementById('songDelay').value = settings.song_delay;
                         if (settings.queue_item_delay !== undefined) document.getElementById('queueItemDelay').value = settings.queue_item_delay;
                         if (settings.continue_on_error !== undefined) document.getElementById('continueOnError').checked = settings.continue_on_error;
+
+                        // Load and apply primary color
+                        if (settings.primary_color) {
+                            selectedPrimaryColor = settings.primary_color;
+                            applyPrimaryColor(settings.primary_color);
+
+                            // Set active swatch
+                            document.querySelectorAll('.color-swatch').forEach(swatch => {
+                                if (swatch.getAttribute('data-color') === settings.primary_color) {
+                                    swatch.classList.add('active');
+                                } else {
+                                    swatch.classList.remove('active');
+                                }
+                            });
+
+                            // Update hidden input
+                            document.getElementById('primaryColor').value = settings.primary_color;
+                        }
 
                         console.log('Settings loaded from server');
                         toggleRetryDelaySettings();  // Update visibility after loading settings
@@ -4917,6 +5099,9 @@ async def root():
                 // Queue behavior options
                 const continueOnError = document.getElementById('continueOnError').checked;
 
+                // Appearance options
+                const primaryColor = selectedPrimaryColor || document.getElementById('primaryColor').value;
+
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
                 localStorage.setItem('gamdl_output_path', outputPath);
@@ -4936,6 +5121,7 @@ async def root():
                 localStorage.setItem('gamdl_song_delay', songDelay);
                 localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
                 localStorage.setItem('gamdl_continue_on_error', continueOnError);
+                localStorage.setItem('gamdl_primary_color', primaryColor);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -4970,6 +5156,9 @@ async def root():
 
                         // Queue behavior options
                         continue_on_error: continueOnError,
+
+                        // Appearance options
+                        primary_color: primaryColor,
                     })
                 }).catch(err => {
                     console.error('Failed to save settings to server config:', err);
@@ -5012,7 +5201,8 @@ async def root():
 
                     const data = await response.json();
                     btn.textContent = isPaused ? '⏸ Pause' : '▶ Resume';
-                    btn.style.background = isPaused ? '#007aff' : '#34c759';
+                    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim();
+                    btn.style.background = isPaused ? primaryColor : '#34c759';
 
                     // Immediately refresh queue status
                     await refreshQueueStatus();
@@ -5104,9 +5294,10 @@ async def root():
                     }
                 } else {
                     pauseBtn.innerHTML = pauseSVG + ' Pause';
-                    pauseBtn.style.background = '#007aff';
+                    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim();
+                    pauseBtn.style.background = primaryColor;
                     pauseBtn.style.color = 'white';
-                    pauseBtn.style.borderColor = '#007aff';
+                    pauseBtn.style.borderColor = primaryColor;
                 }
 
                 // Render queue list
@@ -5906,6 +6097,10 @@ async def save_all_settings_config(request_data: dict):
     if "continue_on_error" in request_data:
         config["continue_on_error"] = request_data["continue_on_error"]
 
+    # Appearance options
+    if "primary_color" in request_data:
+        config["primary_color"] = request_data["primary_color"]
+
     # Save to disk
     save_webui_config(config)
 
@@ -5953,6 +6148,9 @@ async def get_all_settings_config():
 
             # Queue behavior options
             "continue_on_error": config.get("continue_on_error", False),
+
+            # Appearance options
+            "primary_color": config.get("primary_color", "#007aff"),
         }
     }
 
