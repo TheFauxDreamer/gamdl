@@ -1139,15 +1139,27 @@ async def root():
             }
             .form-group.checkbox-group label {
                 display: flex;
-                align-items: center;
+                align-items: flex-start;
                 gap: 8px;
                 cursor: pointer;
                 font-weight: 400;
+                flex-wrap: wrap;
             }
             .form-group.checkbox-group input[type="checkbox"] {
                 width: auto;
                 margin: 0;
                 cursor: pointer;
+                flex-shrink: 0;
+            }
+            .form-group.checkbox-group label span {
+                flex: 1;
+                min-width: 200px;
+            }
+            .form-group.checkbox-group label small {
+                display: block;
+                width: 100%;
+                margin-left: 28px;
+                margin-top: 4px;
             }
             input, textarea, select {
                 width: 100%;
@@ -2046,6 +2058,19 @@ async def root():
                 transform: translateX(26px);
             }
 
+            .toggle-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .toggle-label {
+                font-size: 13px;
+                color: #666;
+                font-weight: 400;
+            }
+
             .monitor-stats {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2480,6 +2505,38 @@ async def root():
                     grid-template-columns: 1fr;
                 }
 
+                /* Playlist selector - full width dropdown on mobile */
+                .selector-controls {
+                    flex-direction: column;
+                    gap: 8px;
+                }
+
+                .playlist-dropdown {
+                    width: 100%;
+                }
+
+                /* Monitor controls - vertical stacked layout on mobile */
+                .monitor-controls {
+                    flex-direction: column;
+                    gap: 8px;
+                    width: 100%;
+                }
+
+                .monitor-controls .toggle-container {
+                    align-self: stretch;
+                }
+
+                .monitor-controls .toggle-switch {
+                    transform: scale(1.2);
+                }
+
+                .monitor-controls button {
+                    width: 100%;
+                    min-height: 44px;
+                    font-size: 15px;
+                    font-weight: 500;
+                }
+
                 /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
                 .nav-tabs {
                     scrollbar-width: none;
@@ -2842,7 +2899,6 @@ async def root():
                         <select id="playlistSelector" class="playlist-dropdown" onchange="handlePlaylistSelection()">
                             <option value="">-- Select a playlist --</option>
                         </select>
-                        <button onclick="loadPlaylistsForSelector()" class="btn-secondary">Refresh Playlists</button>
                     </div>
                     <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: #666;">
                         Loading playlists...
@@ -2859,12 +2915,14 @@ async def root():
 
                     <div class="monitor-active" style="display: none;">
                         <div class="monitor-header">
-                            <h3 id="monitoredPlaylistName">Playlist Name</h3>
                             <div class="monitor-controls">
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="monitorToggle" onchange="toggleMonitoring()">
-                                    <span class="slider"></span>
-                                </label>
+                                <div class="toggle-container">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="monitorToggle" onchange="toggleMonitoring()">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <small class="toggle-label">Pause/Resume Monitoring</small>
+                                </div>
                                 <button onclick="manualCheckPlaylist()" class="btn-secondary">Check Now</button>
                                 <button onclick="stopMonitoring()" class="btn-danger">Stop Monitoring</button>
                             </div>
@@ -4407,12 +4465,6 @@ async def root():
                 if (clickedElement) {
                     clickedElement.classList.add('active');
                     clickedElement.blur();
-                    // Auto-scroll the active tab into view
-                    clickedElement.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'nearest',
-                        inline: 'center'
-                    });
                 } else {
                     tabs.forEach(t => {
                         const tabText = t.textContent.toLowerCase();
@@ -5406,9 +5458,6 @@ async def root():
                         emptyDiv.style.display = 'none';
                         activeDiv.style.display = 'block';
 
-                        // Update playlist name
-                        document.getElementById('monitoredPlaylistName').textContent = status.monitored_playlist.playlist_name;
-
                         // Update toggle
                         document.getElementById('monitorToggle').checked = status.enabled;
 
@@ -5541,7 +5590,6 @@ async def root():
                     const result = await response.json();
 
                     if (response.ok) {
-                        alert('Check completed! Refresh the monitor status to see updates.');
                         refreshMonitorStatus();
                     } else {
                         alert(`Check failed: ${result.detail || 'Unknown error'}`);
