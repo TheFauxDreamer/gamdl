@@ -154,6 +154,7 @@ class DownloadRequest(BaseModel):
 
     # Queue behavior
     continue_on_error: bool = False  # Continue queue processing even if items fail
+    from_monitor: bool = False  # Track if this download is from playlist monitoring
 
     # Display customization (optional)
     display_title: Optional[str] = None  # Custom display name for queue
@@ -511,6 +512,7 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
             song_delay=config.get('song_delay', 0.0),
             queue_item_delay=config.get('queue_item_delay', 0.0),
             continue_on_error=config.get('continue_on_error', False),
+            from_monitor=True,
         )
 
         # Add to queue with proper display info
@@ -939,6 +941,10 @@ async def process_queue():
                         next_item.completed_at = datetime.now()
                         next_item.error_message = summary_message  # Store summary for queue UI
 
+                    # Log to monitor activity if this was from monitoring
+                    if getattr(next_item.download_request, 'from_monitor', False):
+                        log_monitor_event('downloaded', f'Downloaded: {next_item.display_title}')
+
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
                         await asyncio.sleep(queue_item_delay)
@@ -1011,6 +1017,10 @@ async def process_queue():
                         next_item.status = QueueItemStatus.COMPLETED
                         next_item.completed_at = datetime.now()
                         next_item.error_message = summary_message  # Store summary for queue UI
+
+                    # Log to monitor activity if this was from monitoring
+                    if getattr(next_item.download_request, 'from_monitor', False):
+                        log_monitor_event('downloaded', f'Downloaded: {next_item.display_title}')
 
                     if queue_item_delay > 0:
                         logger.info(f"Waiting {queue_item_delay} seconds before next queue item")
@@ -6032,6 +6042,7 @@ async def root():
                     'new_tracks': '+',
                     'removed_tracks': '−',
                     'downloads_completed': '✓',
+                    'downloaded': '✓',
                     'started': '▶',
                     'stopped': '■',
                     'toggle': '⚙',
