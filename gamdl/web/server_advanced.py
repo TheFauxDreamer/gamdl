@@ -5964,7 +5964,21 @@ async def root():
                         // Format last checked time
                         if (status.monitored_playlist.last_checked_at) {
                             const lastChecked = new Date(status.monitored_playlist.last_checked_at);
-                            document.getElementById('monitorLastChecked').textContent = formatRelativeTime(lastChecked);
+                            const now = new Date();
+                            const diff = Math.floor((now - lastChecked) / 1000); // seconds
+
+                            // Relative time
+                            let relative;
+                            if (diff < 60) relative = 'Just now';
+                            else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                            else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                            else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                            else relative = `${Math.floor(diff / 604800)} weeks ago`;
+
+                            // Time only (no date needed since it's recent)
+                            const timeStr = lastChecked.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+                            document.getElementById('monitorLastChecked').innerHTML = `${relative}<br>${timeStr}`;
                         } else {
                             document.getElementById('monitorLastChecked').textContent = 'Never';
                         }
@@ -5972,7 +5986,22 @@ async def root():
                         // Format monitoring since time
                         if (status.monitored_playlist.monitored_since) {
                             const since = new Date(status.monitored_playlist.monitored_since);
-                            document.getElementById('monitoringSince').textContent = formatRelativeTime(since);
+                            const now = new Date();
+                            const diff = Math.floor((now - since) / 1000); // seconds
+
+                            // Relative time
+                            let relative;
+                            if (diff < 60) relative = 'Just now';
+                            else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                            else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                            else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                            else relative = `${Math.floor(diff / 604800)} weeks ago`;
+
+                            // Full date and time
+                            const dateStr = since.toLocaleDateString([], { day: 'numeric', month: 'short' });
+                            const timeStr = since.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+                            document.getElementById('monitoringSince').innerHTML = `${relative}<br>${dateStr}, ${timeStr}`;
                         } else {
                             document.getElementById('monitoringSince').textContent = '-';
                         }
