@@ -1124,6 +1124,72 @@ async def root():
                 --primary-color-hover: #0051d5;
                 --primary-color-light: rgba(0, 122, 255, 0.1);
                 --primary-color-shadow: rgba(0, 122, 255, 0.4);
+
+                /* Light mode colors (default) */
+                --bg-primary: #ffffff;
+                --bg-secondary: #f5f5f5;
+                --bg-tertiary: #f9f9f9;
+                --bg-hover: #f0f0f0;
+                --bg-input: #ffffff;
+
+                --text-primary: #333333;
+                --text-secondary: #666666;
+                --text-tertiary: #999999;
+                --text-disabled: #cccccc;
+
+                --border-primary: #e0e0e0;
+                --border-secondary: #dddddd;
+                --border-input: #dddddd;
+
+                --card-bg: #ffffff;
+                --card-hover: #f9f9f9;
+
+                --success-color: #4CAF50;
+                --warning-color: #ff9500;
+                --error-color: #ff3b30;
+
+                --scrollbar-thumb: #c7c7cc;
+                --scrollbar-thumb-hover: #b0b0b5;
+
+                --shadow-sm: rgba(0, 0, 0, 0.1);
+                --shadow-md: rgba(0, 0, 0, 0.15);
+                --shadow-lg: rgba(0, 0, 0, 0.3);
+
+                --overlay: rgba(0, 0, 0, 0.5);
+            }
+
+            /* Dark mode colors */
+            [data-theme="dark"] {
+                --bg-primary: #2d2d2d;
+                --bg-secondary: #1a1a1a;
+                --bg-tertiary: #3a3a3a;
+                --bg-hover: #404040;
+                --bg-input: #3f3f3f;
+
+                --text-primary: #e8e8e8;
+                --text-secondary: #b0b0b0;
+                --text-tertiary: #808080;
+                --text-disabled: #555555;
+
+                --border-primary: #444444;
+                --border-secondary: #555555;
+                --border-input: #666666;
+
+                --card-bg: #2e2e2e;
+                --card-hover: #3f3f3f;
+
+                --success-color: #66BB6A;
+                --warning-color: #ff9500;
+                --error-color: #ff6b6b;
+
+                --scrollbar-thumb: #666666;
+                --scrollbar-thumb-hover: #888888;
+
+                --shadow-sm: rgba(0, 0, 0, 0.3);
+                --shadow-md: rgba(0, 0, 0, 0.4);
+                --shadow-lg: rgba(0, 0, 0, 0.6);
+
+                --overlay: rgba(0, 0, 0, 0.8);
             }
 
             body {
@@ -1131,21 +1197,27 @@ async def root():
                 max-width: 1200px;
                 margin: 0 auto;
                 padding: 20px;
-                background: #f5f5f5;
+                background: var(--bg-secondary);
             }
             .container {
-                background: white;
+                background: var(--bg-primary);
                 padding: 30px;
                 border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                box-shadow: 0 2px 4px var(--shadow-sm);
             }
             h1 {
-                color: #333;
+                color: var(--text-primary);
                 margin-bottom: 5px;
                 font-size: 24px;
             }
+            h2 {
+                color: var(--text-primary);
+            }
+            h3 {
+                color: var(--text-primary);
+            }
             .subtitle {
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 20px;
                 font-size: 14px;
             }
@@ -1156,7 +1228,7 @@ async def root():
                 display: block;
                 margin-bottom: 5px;
                 font-weight: 500;
-                color: #333;
+                color: var(--text-primary);
             }
             .form-group.checkbox-group {
                 margin-bottom: 12px;
@@ -1188,10 +1260,12 @@ async def root():
             input, textarea, select {
                 width: 100%;
                 padding: 10px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
                 font-size: 14px;
                 box-sizing: border-box;
+                background: var(--bg-input);
+                color: var(--text-primary);
             }
             textarea {
                 min-height: 100px;
@@ -1212,7 +1286,7 @@ async def root():
                 background: #0051d5;
             }
             button:disabled {
-                background: #ccc;
+                background: var(--text-disabled);
                 cursor: not-allowed;
             }
             button.cancel {
@@ -1222,7 +1296,7 @@ async def root():
                 background: #d32f2f;
             }
             button.cancel:disabled {
-                background: #ccc;
+                background: var(--text-disabled);
             }
             .button-group {
                 display: flex;
@@ -1233,7 +1307,7 @@ async def root():
                 display: none;
                 margin-top: 30px;
                 padding: 20px;
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 4px;
             }
             .progress-container.active {
@@ -1267,7 +1341,7 @@ async def root():
                 align-items: center;
                 margin-bottom: 15px;
                 padding: 10px;
-                background: white;
+                background: var(--bg-primary);
                 border-radius: 4px;
             }
             .status-indicator {
@@ -1275,7 +1349,7 @@ async def root():
                 height: 12px;
                 border-radius: 50%;
                 margin-right: 10px;
-                background: #ccc;
+                background: var(--text-disabled);
             }
             .status-indicator.active {
                 background: #34c759;
@@ -1295,7 +1369,7 @@ async def root():
                 margin-bottom: 15px;
             }
             .stat-item {
-                background: white;
+                background: var(--bg-primary);
                 padding: 10px;
                 border-radius: 4px;
                 text-align: center;
@@ -1307,14 +1381,14 @@ async def root():
             }
             .stat-label {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-top: 5px;
             }
             .collapsible {
                 margin-top: 20px;
             }
             .collapsible-header {
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 padding: 10px;
                 border-radius: 4px;
                 cursor: pointer;
@@ -1342,7 +1416,7 @@ async def root():
                 gap: 4px;
                 margin-bottom: 20px;
                 padding: 4px;
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 border-radius: 8px;
                 overflow-x: auto;
                 overflow-y: hidden;
@@ -1361,11 +1435,11 @@ async def root():
                 background: transparent;
             }
             .nav-tabs::-webkit-scrollbar-thumb {
-                background: #c7c7cc;
+                background: var(--scrollbar-thumb);
                 border-radius: 2px;
             }
             .nav-tabs::-webkit-scrollbar-thumb:hover {
-                background: #b0b0b5;
+                background: var(--scrollbar-thumb-hover);
             }
             .nav-tab {
                 padding: 8px 16px;
@@ -1375,7 +1449,7 @@ async def root():
                 cursor: pointer;
                 font-size: 15px;
                 font-weight: 500;
-                color: #666;
+                color: var(--text-secondary);
                 transition: all 0.2s ease-out;
                 white-space: nowrap;
                 flex-shrink: 0;
@@ -1424,7 +1498,7 @@ async def root():
                 margin: 20px 0;
             }
             .library-item {
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 8px;
                 padding: 10px;
                 text-align: center;
@@ -1433,7 +1507,7 @@ async def root():
             }
             .library-item:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+                box-shadow: 0 4px 8px var(--shadow-md);
             }
             .library-item-artwork {
                 position: relative;
@@ -1460,10 +1534,11 @@ async def root():
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+                color: var(--text-primary);
             }
             .library-item-subtitle {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 8px;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1495,12 +1570,12 @@ async def root():
                 border-color: #0056b3;
             }
             .library-item .btn-secondary {
-                background: white;
+                background: var(--bg-primary);
                 color: var(--primary-color);
                 border: 1px solid var(--primary-color);
             }
             .library-item .btn-secondary:hover {
-                background: #f0f0f0;
+                background: var(--bg-hover);
             }
             .load-more {
                 text-align: center;
@@ -1512,7 +1587,7 @@ async def root():
             .library-empty {
                 text-align: center;
                 padding: 40px;
-                color: #999;
+                color: var(--text-tertiary);
             }
             .library-error {
                 background: #fff3cd;
@@ -1531,7 +1606,7 @@ async def root():
             .loading {
                 text-align: center;
                 padding: 40px;
-                color: #666;
+                color: var(--text-secondary);
             }
 
             .spinner {
@@ -1552,9 +1627,9 @@ async def root():
             #settingsView h3 {
                 margin-top: 30px;
                 margin-bottom: 15px;
-                color: #333;
+                color: var(--text-primary);
                 font-size: 16px;
-                border-bottom: 2px solid #e0e0e0;
+                border-bottom: 2px solid var(--border-primary);
                 padding-bottom: 8px;
             }
             #settingsView h3:first-of-type {
@@ -1563,7 +1638,7 @@ async def root():
             #settingsView small {
                 display: block;
                 margin-top: 5px;
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 12px;
             }
 
@@ -1574,8 +1649,8 @@ async def root():
                 top: 0;
                 bottom: 0;
                 width: 350px;
-                background: white;
-                box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+                background: var(--bg-primary);
+                box-shadow: -2px 0 10px var(--shadow-sm);
                 transform: translateX(0);
                 transition: transform 0.3s ease;
                 z-index: 1000;
@@ -1599,21 +1674,22 @@ async def root():
                 margin: 0;
                 font-size: 18px;
                 font-weight: 600;
+                color: white;
             }
             .queue-controls {
                 display: flex;
                 gap: 10px;
                 padding: 10px;
-                background: #f9f9f9;
-                border-bottom: 1px solid #e0e0e0;
+                background: var(--bg-tertiary);
+                border-bottom: 1px solid var(--border-primary);
             }
             .queue-control-btn {
                 flex: 1;
                 padding: 8px 12px;
                 font-size: 13px;
-                background: white;
-                color: #333;
-                border: 1px solid #ddd;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
                 cursor: pointer;
                 transition: all 0.2s;
@@ -1626,7 +1702,7 @@ async def root():
                 flex-shrink: 0;
             }
             .queue-control-btn:hover {
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 border-color: var(--primary-color);
             }
             .queue-control-btn.clear-btn {
@@ -1645,8 +1721,8 @@ async def root():
                 display: flex;
                 justify-content: space-around;
                 padding: 10px;
-                background: #f9f9f9;
-                border-bottom: 1px solid #e0e0e0;
+                background: var(--bg-tertiary);
+                border-bottom: 1px solid var(--border-primary);
             }
             .queue-stat {
                 display: flex;
@@ -1655,7 +1731,7 @@ async def root():
                 font-size: 12px;
             }
             .queue-stat-label {
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 4px;
             }
             .queue-stat-value {
@@ -1669,15 +1745,15 @@ async def root():
                 padding: 10px;
             }
             .queue-item {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 4px;
                 padding: 8px 10px;
                 margin-bottom: 6px;
                 transition: all 0.2s;
             }
             .queue-item:hover {
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                box-shadow: 0 2px 8px var(--shadow-sm);
             }
             .queue-item.queued {
                 border-left: 4px solid var(--primary-color);
@@ -1707,7 +1783,7 @@ async def root():
             .queue-item-title {
                 font-weight: 600;
                 font-size: 13px;
-                color: #333;
+                color: var(--text-primary);
                 margin-bottom: 0;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1716,9 +1792,9 @@ async def root():
             }
             .queue-item-type {
                 font-size: 11px;
-                color: #666;
+                color: var(--text-secondary);
                 text-transform: uppercase;
-                background: #f0f0f0;
+                background: var(--bg-hover);
                 padding: 2px 6px;
                 border-radius: 3px;
                 margin-left: 8px;
@@ -1728,12 +1804,12 @@ async def root():
                 align-items: center;
                 gap: 8px;
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-bottom: 8px;
             }
             .queue-item-stats {
                 font-size: 12px;
-                color: #666;
+                color: var(--text-secondary);
                 margin-top: 4px;
                 padding: 4px 0;
             }
@@ -1763,14 +1839,14 @@ async def root():
             .queue-item-btn {
                 padding: 4px 8px;
                 font-size: 12px;
-                border: 1px solid #ddd;
-                background: white;
+                border: 1px solid var(--border-input);
+                background: var(--bg-primary);
                 border-radius: 4px;
                 cursor: pointer;
                 transition: all 0.2s;
             }
             .queue-item-btn:hover {
-                background: #f0f0f0;
+                background: var(--bg-hover);
             }
             .queue-item-btn.remove {
                 color: #ff3b30;
@@ -1783,7 +1859,7 @@ async def root():
             .queue-empty {
                 text-align: center;
                 padding: 40px 20px;
-                color: #999;
+                color: var(--text-tertiary);
             }
             .queue-empty-icon {
                 font-size: 48px;
@@ -1824,9 +1900,9 @@ async def root():
             .queue-item-view {
                 padding: 4px 12px;
                 font-size: 12px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 4px;
-                background: white;
+                background: var(--bg-primary);
                 cursor: pointer;
                 transition: all 0.2s;
             }
@@ -1859,7 +1935,7 @@ async def root():
                 flex: 1;
                 padding: 12px 16px;
                 font-size: 16px;
-                border: 2px solid #e0e0e0;
+                border: 2px solid var(--border-primary);
                 border-radius: 8px;
                 outline: none;
                 transition: border-color 0.2s;
@@ -1893,7 +1969,7 @@ async def root():
                 left: 0;
                 width: 100%;
                 height: 100%;
-                background: rgba(0, 0, 0, 0.5);
+                background: var(--overlay);
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -1901,14 +1977,14 @@ async def root():
             }
 
             .modal-content {
-                background: white;
+                background: var(--bg-primary);
                 border-radius: 12px;
                 width: 90%;
                 max-width: 1200px;
                 max-height: 90vh;
                 display: flex;
                 flex-direction: column;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                box-shadow: 0 8px 32px var(--shadow-lg);
             }
 
             .modal-header {
@@ -1916,7 +1992,7 @@ async def root():
                 justify-content: space-between;
                 align-items: center;
                 padding: 20px;
-                border-bottom: 1px solid #e0e0e0;
+                border-bottom: 1px solid var(--border-primary);
             }
 
             .modal-header h2 {
@@ -1929,7 +2005,7 @@ async def root():
                 border: none;
                 font-size: 32px;
                 cursor: pointer;
-                color: #666;
+                color: var(--text-secondary);
                 padding: 0;
                 width: 40px;
                 height: 40px;
@@ -1937,7 +2013,7 @@ async def root():
             }
 
             .modal-close:hover {
-                color: #333;
+                color: var(--text-primary);
             }
 
             .modal-body {
@@ -1951,7 +2027,7 @@ async def root():
                 justify-content: flex-end;
                 gap: 10px;
                 padding: 20px;
-                border-top: 1px solid #e0e0e0;
+                border-top: 1px solid var(--border-primary);
             }
 
             .artist-section {
@@ -1966,8 +2042,8 @@ async def root():
 
             /* Monitor View Styles */
             .monitor-card {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 8px;
                 padding: 20px;
                 margin-bottom: 20px;
@@ -1976,7 +2052,7 @@ async def root():
             .playlist-selector-section {
                 margin-bottom: 20px;
                 padding: 20px;
-                background: #f9f9f9;
+                background: var(--bg-tertiary);
                 border-radius: 8px;
             }
 
@@ -1984,7 +2060,7 @@ async def root():
                 display: block;
                 margin-bottom: 10px;
                 font-weight: 600;
-                color: #333;
+                color: var(--text-primary);
             }
 
             .selector-controls {
@@ -1997,9 +2073,9 @@ async def root():
                 flex: 1;
                 padding: 10px 15px;
                 font-size: 14px;
-                border: 1px solid #ddd;
+                border: 1px solid var(--border-input);
                 border-radius: 6px;
-                background: white;
+                background: var(--bg-primary);
                 cursor: pointer;
                 min-width: 300px;
             }
@@ -2013,7 +2089,7 @@ async def root():
             .monitor-empty {
                 text-align: center;
                 padding: 40px 20px;
-                color: #666;
+                color: var(--text-secondary);
             }
 
             .monitor-active .monitor-header {
@@ -2091,7 +2167,7 @@ async def root():
 
             .toggle-label {
                 font-size: 13px;
-                color: #666;
+                color: var(--text-secondary);
                 font-weight: 400;
             }
 
@@ -2104,13 +2180,13 @@ async def root():
 
             .monitor-stats .stat {
                 padding: 10px;
-                background: #f5f5f5;
+                background: var(--bg-tertiary);
                 border-radius: 4px;
             }
 
             .monitor-stats .stat-label {
                 font-weight: 600;
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 13px;
             }
 
@@ -2118,12 +2194,12 @@ async def root():
                 display: block;
                 margin-top: 4px;
                 font-size: 16px;
-                color: #333;
+                color: var(--text-primary);
             }
 
             .activity-log-section {
-                background: white;
-                border: 1px solid #e0e0e0;
+                background: var(--bg-primary);
+                border: 1px solid var(--border-primary);
                 border-radius: 8px;
                 padding: 20px;
             }
@@ -2141,7 +2217,7 @@ async def root():
 
             .activity-empty {
                 text-align: center;
-                color: #999;
+                color: var(--text-tertiary);
                 padding: 20px;
             }
 
@@ -2190,11 +2266,12 @@ async def root():
             .activity-item .activity-message {
                 font-weight: 500;
                 margin-bottom: 4px;
+                color: var(--text-primary);
             }
 
             .activity-item .activity-time {
                 font-size: 12px;
-                color: #999;
+                color: var(--text-tertiary);
             }
 
             .activity-tracks {
@@ -2204,7 +2281,7 @@ async def root():
 
             .activity-track {
                 font-size: 13px;
-                color: #666;
+                color: var(--text-secondary);
                 line-height: 1.6;
                 white-space: nowrap;
                 overflow: hidden;
@@ -2213,7 +2290,7 @@ async def root():
 
             .activity-track-more {
                 font-size: 13px;
-                color: #999;
+                color: var(--text-tertiary);
                 font-style: italic;
                 margin-top: 2px;
             }
@@ -2240,13 +2317,13 @@ async def root():
             }
 
             .color-swatch:hover {
-                background: #eee;
+                background: var(--bg-hover);
                 transform: translateY(-2px);
             }
 
             .color-swatch.active {
-                border-color: #333;
-                background: #fff;
+                border-color: var(--text-primary);
+                background: var(--bg-primary);
             }
 
             .swatch-color {
@@ -2259,7 +2336,62 @@ async def root():
             .swatch-name {
                 font-size: 13px;
                 font-weight: 500;
-                color: #333;
+                color: var(--text-primary);
+            }
+
+            .dark-mode-group {
+                margin-bottom: 30px;
+            }
+
+            .dark-mode-options {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                margin-top: 15px;
+            }
+
+            .radio-option {
+                display: flex;
+                align-items: center;
+                padding: 15px;
+                background: var(--bg-tertiary);
+                border: 2px solid var(--border-primary);
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+
+            .radio-option:hover {
+                background: var(--bg-hover);
+                border-color: var(--primary-color);
+            }
+
+            .radio-option input[type="radio"] {
+                margin-right: 12px;
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
+            }
+
+            .radio-option input[type="radio"]:checked {
+                accent-color: var(--primary-color);
+            }
+
+            .radio-content {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .radio-label {
+                font-size: 15px;
+                font-weight: 500;
+                color: var(--text-primary);
+            }
+
+            .radio-description {
+                font-size: 13px;
+                color: var(--text-secondary);
             }
 
             .btn-danger {
@@ -2342,7 +2474,7 @@ async def root():
                 left: 0;
                 right: 0;
                 bottom: 0;
-                background: rgba(0, 0, 0, 0.5);
+                background: var(--overlay);
                 z-index: 999;
                 opacity: 0;
                 transition: opacity 0.3s ease;
@@ -2427,12 +2559,12 @@ async def root():
                     bottom: 0;
                     left: 0;
                     right: 0;
-                    background: white;
-                    border-top: 1px solid #e0e0e0;
+                    background: var(--bg-primary);
+                    border-top: 1px solid var(--border-primary);
                     padding: 8px 0 max(8px, env(safe-area-inset-bottom));
                     justify-content: space-around;
                     z-index: 900;
-                    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+                    box-shadow: 0 -2px 10px var(--shadow-sm);
                 }
 
                 .bottom-nav-item {
@@ -2444,7 +2576,7 @@ async def root():
                     border: none;
                     padding: 4px 8px;
                     cursor: pointer;
-                    color: #666;
+                    color: var(--text-secondary);
                     transition: color 0.2s ease-out;
                     min-width: 60px;
                     gap: 2px;
@@ -2464,7 +2596,7 @@ async def root():
                 /* Override global button:hover that causes persistent blue background on mobile */
                 .bottom-nav-item:hover {
                     background: none;
-                    color: #666;  /* Keep gray unless it's the active tab */
+                    color: var(--text-secondary);  /* Keep gray unless it's the active tab */
                 }
 
                 .bottom-nav-item.active:hover {
@@ -2485,7 +2617,7 @@ async def root():
                         color: var(--primary-color);
                     }
                     100% {
-                        color: #666;
+                        color: var(--text-secondary);
                     }
                 }
 
@@ -2643,6 +2775,19 @@ async def root():
                 }
 
                 .swatch-name {
+                    font-size: 12px;
+                }
+
+                /* Dark mode radio options - more compact on mobile */
+                .radio-option {
+                    padding: 12px;
+                }
+
+                .radio-label {
+                    font-size: 14px;
+                }
+
+                .radio-description {
                     font-size: 12px;
                 }
 
@@ -3033,6 +3178,40 @@ async def root():
                     <input type="hidden" id="primaryColor" name="primaryColor" value="#007aff">
                 </div>
 
+                <!-- Dark Mode Settings -->
+                <div class="form-group dark-mode-group">
+                    <label>Dark Mode</label>
+                    <small>Choose how the interface appears</small>
+
+                    <div class="dark-mode-options">
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="auto" checked onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Automatic</span>
+                                <span class="radio-description">Follows system preference</span>
+                            </div>
+                        </label>
+
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="light" onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Light</span>
+                                <span class="radio-description">Always use light mode</span>
+                            </div>
+                        </label>
+
+                        <label class="radio-option">
+                            <input type="radio" name="darkMode" value="dark" onchange="selectDarkMode(this)">
+                            <div class="radio-content">
+                                <span class="radio-label">Dark</span>
+                                <span class="radio-description">Always use dark mode</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <input type="hidden" id="darkModePreference" name="darkModePreference" value="auto">
+                </div>
+
                 <div class="button-group">
                     <button type="button" onclick="saveAllSettings()">Save Settings</button>
                 </div>
@@ -3050,7 +3229,7 @@ async def root():
                             <option value="">-- Select a playlist --</option>
                         </select>
                     </div>
-                    <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: #666;">
+                    <div id="playlistSelectorLoading" style="display: none; margin-top: 10px; color: var(--text-secondary);">
                         Loading playlists...
                     </div>
                     <div id="playlistSelectorError" class="error-message" style="display: none; margin-top: 10px;"></div>
@@ -3300,7 +3479,7 @@ async def root():
                 <div class="modal-content" style="max-width: 900px;">
                     <div class="modal-header">
                         <h3 id="episodeModalTitle">Podcast Episodes</h3>
-                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: #666;">&times;</button>
+                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: var(--text-secondary);">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
@@ -4781,7 +4960,7 @@ async def root():
                     infoDiv.appendChild(title);
 
                     const meta = document.createElement('div');
-                    meta.style.cssText = 'font-size: 13px; color: #666;';
+                    meta.style.cssText = 'font-size: 13px; color: var(--text-secondary);';
                     const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
                     const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
                     meta.textContent = `${date}${duration}`;
@@ -4952,6 +5131,58 @@ async def root():
                 return `rgba(${r}, ${g}, ${b}, ${alpha})`;
             }
 
+            // Dark mode management
+            let currentDarkModePreference = 'auto'; // auto, light, dark
+
+            function getSystemTheme() {
+                return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+
+            function selectDarkMode(input) {
+                const value = input.value;
+                currentDarkModePreference = value;
+
+                // Update hidden input
+                document.getElementById('darkModePreference').value = value;
+
+                // Apply theme immediately
+                applyDarkMode(value);
+            }
+
+            function applyDarkMode(preference) {
+                let actualTheme;
+
+                if (preference === 'auto') {
+                    actualTheme = getSystemTheme();
+                } else {
+                    actualTheme = preference; // 'light' or 'dark'
+                }
+
+                // Set data-theme attribute on html element
+                document.documentElement.setAttribute('data-theme', actualTheme);
+
+                // Save to localStorage for immediate persistence
+                localStorage.setItem('dark-mode-preference', preference);
+
+                console.log(`Applied theme: ${actualTheme} (preference: ${preference})`);
+            }
+
+            // Listen for system theme changes (only matters if preference is 'auto')
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+                if (currentDarkModePreference === 'auto') {
+                    applyDarkMode('auto');
+                }
+            });
+
+            // Initialize theme on page load (called from init function)
+            function initDarkMode() {
+                // Try to get from server first (will be set in loadPreferences)
+                // Fallback to localStorage
+                const savedPreference = localStorage.getItem('dark-mode-preference') || 'auto';
+                currentDarkModePreference = savedPreference;
+                applyDarkMode(savedPreference);
+            }
+
             // Load and save user preferences
             async function loadPreferences() {
                 try {
@@ -4998,6 +5229,20 @@ async def root():
 
                             // Update hidden input
                             document.getElementById('primaryColor').value = settings.primary_color;
+                        }
+
+                        // Load and apply dark mode preference
+                        if (settings.dark_mode_preference) {
+                            currentDarkModePreference = settings.dark_mode_preference;
+                            applyDarkMode(settings.dark_mode_preference);
+
+                            // Set active radio button
+                            document.querySelectorAll('input[name="darkMode"]').forEach(radio => {
+                                radio.checked = (radio.value === settings.dark_mode_preference);
+                            });
+
+                            // Update hidden input
+                            document.getElementById('darkModePreference').value = settings.dark_mode_preference;
                         }
 
                         console.log('Settings loaded from server');
@@ -5101,6 +5346,7 @@ async def root():
 
                 // Appearance options
                 const primaryColor = selectedPrimaryColor || document.getElementById('primaryColor').value;
+                const darkModePreference = currentDarkModePreference || document.getElementById('darkModePreference').value;
 
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
@@ -5122,6 +5368,7 @@ async def root():
                 localStorage.setItem('gamdl_queue_item_delay', queueItemDelay);
                 localStorage.setItem('gamdl_continue_on_error', continueOnError);
                 localStorage.setItem('gamdl_primary_color', primaryColor);
+                localStorage.setItem('gamdl_dark_mode_preference', darkModePreference);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -5159,6 +5406,7 @@ async def root():
 
                         // Appearance options
                         primary_color: primaryColor,
+                        dark_mode_preference: darkModePreference,
                     })
                 }).catch(err => {
                     console.error('Failed to save settings to server config:', err);
@@ -5515,6 +5763,7 @@ async def root():
 
             // Load albums and preferences on page load
             document.addEventListener('DOMContentLoaded', () => {
+                initDarkMode();  // Initialize theme first for no flash
                 loadPreferences();  // toggleRetryDelaySettings() is now called inside loadPreferences() after settings are loaded
                 loadLibraryAlbums();
                 startQueueRefresh();
@@ -5880,7 +6129,7 @@ async def root():
                         <div style="text-align: center;">
                             <div class="spinner"></div>
                             <p id="artistModalLoadingText">Fetching artist catalog...</p>
-                            <small id="artistModalLoadingProgress" style="color: #666;"></small>
+                            <small id="artistModalLoadingProgress" style="color: var(--text-secondary);"></small>
                         </div>
                     </div>
                     <div id="artistModalContent" style="display:none;">
@@ -6100,6 +6349,8 @@ async def save_all_settings_config(request_data: dict):
     # Appearance options
     if "primary_color" in request_data:
         config["primary_color"] = request_data["primary_color"]
+    if "dark_mode_preference" in request_data:
+        config["dark_mode_preference"] = request_data["dark_mode_preference"]
 
     # Save to disk
     save_webui_config(config)
@@ -6151,6 +6402,7 @@ async def get_all_settings_config():
 
             # Appearance options
             "primary_color": config.get("primary_color", "#007aff"),
+            "dark_mode_preference": config.get("dark_mode_preference", "auto"),
         }
     }
 
