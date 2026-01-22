@@ -1256,6 +1256,7 @@ async def root():
                 margin: 0;
                 cursor: pointer;
                 flex-shrink: 0;
+                accent-color: var(--primary-color);
             }
             .form-group.checkbox-group label span {
                 flex: 1;
