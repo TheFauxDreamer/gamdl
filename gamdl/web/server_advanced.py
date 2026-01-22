@@ -317,7 +317,7 @@ def save_monitor_config(config: dict):
         logger.error(f"Failed to save monitor config: {e}")
 
 
-def log_monitor_event(event_type: str, message: str, track_ids: list = None):
+def log_monitor_event(event_type: str, message: str, track_ids: list = None, tracks: list = None, track_count: int = None):
     """Add event to activity log (keep last 100)."""
     try:
         config = load_monitor_config()
@@ -329,6 +329,10 @@ def log_monitor_event(event_type: str, message: str, track_ids: list = None):
         }
         if track_ids:
             event["track_ids"] = track_ids
+        if tracks:
+            event["tracks"] = tracks
+        if track_count:
+            event["track_count"] = track_count
 
         config.setdefault('activity_log', []).insert(0, event)
         config['activity_log'] = config['activity_log'][:100]  # Keep last 100
@@ -431,6 +435,9 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
 
     api = app.state.api
 
+    # Collect track details for activity log (first 3 tracks)
+    track_details = []
+
     # Fetch metadata and queue each track
     for track_id in new_track_ids:
         try:
@@ -447,6 +454,10 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
                 artist_name = song_attrs.get("artistName", "Unknown Artist")
                 display_title = f"{song_title} - {artist_name}"
                 logger.info(f"Queueing monitored track: {display_title}")
+
+                # Collect track details for activity log (limit to first 3)
+                if len(track_details) < 3:
+                    track_details.append({"title": song_title, "artist": artist_name})
             else:
                 # Metadata fetch returned empty
                 display_title = f"Monitored: {track_id}"
@@ -510,8 +521,14 @@ async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
         except Exception as e:
             logger.error(f"Failed to add track {track_id} to queue: {e}")
 
-    # Log event
-    log_monitor_event('new_tracks', f'Found {len(new_track_ids)} new tracks', list(new_track_ids))
+    # Log event with track details
+    log_monitor_event(
+        'new_tracks',
+        f'Found {len(new_track_ids)} new tracks',
+        track_ids=list(new_track_ids),
+        tracks=track_details if track_details else None,
+        track_count=len(new_track_ids)
+    )
 
 
 async def _queue_track_without_metadata(track_id: str, playlist_info: dict):
@@ -2060,9 +2077,9 @@ async def root():
 
             .toggle-container {
                 display: flex;
-                flex-direction: column;
+                flex-direction: row;
                 align-items: center;
-                gap: 6px;
+                gap: 10px;
             }
 
             .toggle-label {
@@ -2171,6 +2188,27 @@ async def root():
             .activity-item .activity-time {
                 font-size: 12px;
                 color: #999;
+            }
+
+            .activity-tracks {
+                margin-top: 8px;
+                padding-left: 4px;
+            }
+
+            .activity-track {
+                font-size: 13px;
+                color: #666;
+                line-height: 1.6;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .activity-track-more {
+                font-size: 13px;
+                color: #999;
+                font-style: italic;
+                margin-top: 2px;
             }
 
             .btn-danger {
@@ -2535,6 +2573,12 @@ async def root():
                     min-height: 44px;
                     font-size: 15px;
                     font-weight: 500;
+                }
+
+                /* Activity track lists - allow wrapping for long titles on mobile */
+                .activity-track {
+                    white-space: normal;
+                    word-break: break-word;
                 }
 
                 /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
@@ -5511,11 +5555,29 @@ async def root():
                     const icon = getEventIcon(event.event_type);
                     const time = new Date(event.timestamp);
 
+                    // Build track list HTML if tracks are present
+                    let trackListHtml = '';
+                    if (event.tracks && event.tracks.length > 0) {
+                        trackListHtml = '<div class="activity-tracks">';
+                        event.tracks.forEach(track => {
+                            trackListHtml += `<div class="activity-track">• ${track.title} - ${track.artist}</div>`;
+                        });
+
+                        // Show "+X more" if there are additional tracks
+                        if (event.track_count && event.track_count > event.tracks.length) {
+                            const remaining = event.track_count - event.tracks.length;
+                            trackListHtml += `<div class="activity-track-more">(+${remaining} more)</div>`;
+                        }
+
+                        trackListHtml += '</div>';
+                    }
+
                     html += `
                         <div class="activity-item ${eventClass}">
                             <div class="activity-icon">${icon}</div>
                             <div class="activity-content">
                                 <div class="activity-message">${event.message}</div>
+                                ${trackListHtml}
                                 <div class="activity-time">${formatRelativeTime(time)}</div>
                             </div>
                         </div>
@@ -5529,6 +5591,7 @@ async def root():
                 const icons = {
                     'new_tracks': '+',
                     'removed_tracks': '−',
+                    'downloads_completed': '✓',
                     'started': '▶',
                     'stopped': '■',
                     'toggle': '⚙',
@@ -5542,11 +5605,21 @@ async def root():
                 const now = new Date();
                 const diff = Math.floor((now - date) / 1000); // seconds
 
-                if (diff < 60) return 'Just now';
-                if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
-                if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
-                if (diff < 604800) return `${Math.floor(diff / 86400)} days ago`;
-                return date.toLocaleDateString();
+                // Format actual timestamp (e.g., "3:45 PM" or "Jan 22, 3:45 PM")
+                const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                const isToday = date.toDateString() === now.toDateString();
+                const timestamp = isToday ? timeStr : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+
+                // Relative time
+                let relative;
+                if (diff < 60) relative = 'Just now';
+                else if (diff < 3600) relative = `${Math.floor(diff / 60)} minutes ago`;
+                else if (diff < 86400) relative = `${Math.floor(diff / 3600)} hours ago`;
+                else if (diff < 604800) relative = `${Math.floor(diff / 86400)} days ago`;
+                else relative = null;
+
+                // Return "relative • timestamp" or just timestamp if relative is null
+                return relative ? `${relative} • ${timestamp}` : timestamp;
             }
 
             async function toggleMonitoring() {
