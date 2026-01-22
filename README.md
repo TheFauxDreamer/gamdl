@@ -33,6 +33,7 @@ These work well enough that I haven't encountered major issues or bugs that brea
 These are in "active" development and in varying states of useability. (Check the branches for these features)
 - Fixes for failed library downloads
 - Look at fallback for these failures
+- Auto-clear queue at user set interval
 
 
 ## 🗓️ Future Features
