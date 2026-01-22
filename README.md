@@ -62,9 +62,9 @@ pip install -e ".[web]"
 ```
 
 7. Once complete, in the Terminal type:
-```
-gamdl-web --advanced
-```
+   ```
+   gamdl-web --advanced
+   ```
 or for a custom port
 ```
 python -m gamdl.web.cli --advanced --port XXXX
