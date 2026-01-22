@@ -54,7 +54,7 @@ These will come in time (maybe), I don't have a timeline tho.
    
 4. Unzip and save it somewhere like Documents
 
-5. Right click on the gamdl folder, select "Open a Terminal"
+5. Right click on the gamdl-main folder, select "Open a Terminal"
 
 6. Enter the following into the Terminal to setup the tool & download the essential dependencies:
 ```
