@@ -2856,9 +2856,9 @@ async def root():
             <!-- Desktop Navigation (hidden on mobile) -->
             <div class="nav-tabs desktop-nav">
                 <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
+                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
                 <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
                 <button class="nav-tab" onclick="switchView('search', this)">Search</button>
-                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
                 <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
             </div>
 
@@ -2870,6 +2870,12 @@ async def root():
                         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
                     </svg>
                     <span class="bottom-nav-label">Library</span>
+                </button>
+                <button class="bottom-nav-item" onclick="switchView('monitor', this)" data-view="monitor">
+                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    <span class="bottom-nav-label">Monitor</span>
                 </button>
                 <button class="bottom-nav-item" onclick="switchView('downloads', this)" data-view="downloads">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2884,12 +2890,6 @@ async def root():
                         <path d="m21 21-4.35-4.35"></path>
                     </svg>
                     <span class="bottom-nav-label">Search</span>
-                </button>
-                <button class="bottom-nav-item" onclick="switchView('monitor', this)" data-view="monitor">
-                    <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                    </svg>
-                    <span class="bottom-nav-label">Monitor</span>
                 </button>
                 <button class="bottom-nav-item" onclick="switchView('settings', this)" data-view="settings">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
