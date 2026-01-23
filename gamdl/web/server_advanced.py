@@ -640,6 +640,42 @@ async def check_monitored_playlist():
             pass
 
 
+async def auto_clear_completed_queue():
+    """Scheduled task to automatically clear completed queue items."""
+    global download_queue
+
+    config = load_webui_config()
+
+    # Check if auto-clear is enabled
+    if not config.get("auto_clear_queue", False):
+        logger.debug("Auto-clear queue is disabled, skipping")
+        return
+
+    # Safety check: Only clear if there are completed items
+    completed_count = 0
+    with queue_lock:
+        completed_count = sum(
+            1 for item in download_queue
+            if item.status in [QueueItemStatus.COMPLETED, QueueItemStatus.FAILED, QueueItemStatus.CANCELLED]
+        )
+
+    if completed_count == 0:
+        logger.debug("No completed items to clear")
+        return
+
+    # Clear completed items
+    logger.info(f"Auto-clearing {completed_count} completed queue items")
+    with queue_lock:
+        download_queue = [
+            item for item in download_queue
+            if item.status in [QueueItemStatus.QUEUED, QueueItemStatus.DOWNLOADING]
+        ]
+
+    # Broadcast update to all clients
+    await broadcast_queue_update()
+    logger.info("Auto-clear completed successfully")
+
+
 def start_monitor_scheduler():
     """Initialize and start the monitoring scheduler."""
     global monitor_scheduler
@@ -649,15 +685,36 @@ def start_monitor_scheduler():
             logger.info("Monitor scheduler already running")
             return
 
+        # Load config to get intervals
+        config = load_webui_config()
+
         monitor_scheduler = AsyncIOScheduler()
+
+        # Add playlist monitoring job
         monitor_scheduler.add_job(
             check_monitored_playlist,
             trigger=IntervalTrigger(minutes=60),
             id='playlist_monitor',
             replace_existing=True
         )
+
+        # Add auto-clear queue job (only if enabled)
+        auto_clear_enabled = config.get("auto_clear_queue", False)
+        if auto_clear_enabled:
+            auto_clear_interval = config.get("auto_clear_interval", 60)
+            monitor_scheduler.add_job(
+                auto_clear_completed_queue,
+                trigger=IntervalTrigger(minutes=auto_clear_interval),
+                id='auto_clear_queue',
+                replace_existing=True
+            )
+            logger.info(f"Auto-clear queue job scheduled every {auto_clear_interval} minutes")
+        else:
+            logger.info("Auto-clear queue is disabled, job not scheduled on startup")
+
         monitor_scheduler.start()
-        logger.info("Monitor scheduler started successfully (checking every 60 minutes)")
+        auto_clear_status = f"{config.get('auto_clear_interval', 60)}min" if auto_clear_enabled else "disabled"
+        logger.info(f"Monitor scheduler started successfully (playlist check: 60min, auto-clear: {auto_clear_status})")
     except Exception as e:
         logger.error(f"Failed to start monitor scheduler: {e}", exc_info=True)
 
@@ -670,9 +727,41 @@ def stop_monitor_scheduler():
         if monitor_scheduler is not None:
             monitor_scheduler.shutdown(wait=False)
             monitor_scheduler = None
-            logger.info("Monitor scheduler stopped")
+            logger.info("Monitor scheduler stopped (playlist monitoring and auto-clear)")
     except Exception as e:
         logger.error(f"Failed to stop monitor scheduler: {e}")
+
+
+def update_auto_clear_schedule():
+    """Update the auto-clear job interval when settings change."""
+    global monitor_scheduler
+
+    if monitor_scheduler is None or not monitor_scheduler.running:
+        logger.debug("Scheduler not running, cannot update auto-clear schedule")
+        return
+
+    config = load_webui_config()
+    auto_clear_enabled = config.get("auto_clear_queue", False)
+    auto_clear_interval = config.get("auto_clear_interval", 60)
+
+    # Remove existing auto-clear job
+    try:
+        monitor_scheduler.remove_job("auto_clear_queue")
+        logger.debug("Removed existing auto-clear job")
+    except Exception as e:
+        logger.debug(f"No existing auto-clear job to remove: {e}")
+
+    # Re-add with new interval (only if enabled)
+    if auto_clear_enabled:
+        monitor_scheduler.add_job(
+            auto_clear_completed_queue,
+            trigger=IntervalTrigger(minutes=auto_clear_interval),
+            id="auto_clear_queue",
+            replace_existing=True,
+        )
+        logger.info(f"Updated auto-clear schedule to {auto_clear_interval} minutes")
+    else:
+        logger.info("Auto-clear disabled, job not re-added")
 
 
 # Queue Management Functions
@@ -1128,6 +1217,7 @@ async def root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
         <title>gamdl Advanced Web UI</title>
+        <link rel="icon" type="image/x-icon" href="/favicon.ico">
         <style>
             :root {
                 --primary-color: #007aff;
@@ -1487,7 +1577,7 @@ async def root():
             .nav-tab.active {
                 background: var(--primary-color);
                 color: #ffffff;
-                font-weight: 600;
+                font-weight: 500;
             }
             .nav-tab.active:hover {
                 background: var(--primary-color);
@@ -1507,6 +1597,11 @@ async def root():
                 grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
                 gap: 20px;
                 margin: 20px 0;
+            }
+            /* Compact mode - desktop */
+            body.compact-mode .library-grid {
+                grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+                gap: 15px;
             }
             .library-item {
                 background: var(--bg-tertiary);
@@ -2255,9 +2350,21 @@ async def root():
                 flex-shrink: 0;
             }
 
+            .activity-item .activity-icon svg {
+                display: block;
+                width: 16px;
+                height: 16px;
+                stroke: var(--text-secondary);
+            }
+
+            /* Light mode specific colors */
             .activity-item.new-tracks .activity-icon {
                 background: #e8f5e9;
                 color: #4CAF50;
+            }
+
+            .activity-item.new-tracks .activity-icon svg {
+                stroke: #4CAF50;
             }
 
             .activity-item.removed-tracks .activity-icon {
@@ -2265,9 +2372,30 @@ async def root():
                 color: #ff9800;
             }
 
+            .activity-item.removed-tracks .activity-icon svg {
+                stroke: #ff9800;
+            }
+
             .activity-item.error .activity-icon {
                 background: #ffebee;
                 color: #f44336;
+            }
+
+            .activity-item.error .activity-icon svg {
+                stroke: #f44336;
+            }
+
+            /* Dark mode adjustments */
+            [data-theme="dark"] .activity-item.new-tracks .activity-icon {
+                background: rgba(76, 175, 80, 0.2);
+            }
+
+            [data-theme="dark"] .activity-item.removed-tracks .activity-icon {
+                background: rgba(255, 152, 0, 0.2);
+            }
+
+            [data-theme="dark"] .activity-item.error .activity-icon {
+                background: rgba(244, 67, 54, 0.2);
             }
 
             .activity-item .activity-content {
@@ -2318,8 +2446,8 @@ async def root():
             }
 
             .color-swatch {
-                background: #f5f5f5;
-                border: 2px solid transparent;
+                background: var(--bg-tertiary);
+                border: 2px solid var(--border-primary);
                 border-radius: 8px;
                 padding: 10px;
                 cursor: pointer;
@@ -2333,8 +2461,8 @@ async def root():
             }
 
             .color-swatch.active {
-                border-color: var(--text-primary);
-                background: var(--bg-primary);
+                border-width: 3px;
+                background: var(--bg-secondary);
             }
 
             .swatch-color {
@@ -2356,53 +2484,158 @@ async def root():
 
             .dark-mode-options {
                 display: flex;
-                flex-direction: column;
-                gap: 12px;
+                flex-direction: row;
+                align-items: center;
+                gap: 4px;
                 margin-top: 15px;
+                background: var(--bg-secondary);
+                padding: 4px;
+                border-radius: 8px;
+                width: fit-content;
             }
 
-            .radio-option {
+            .dark-mode-group .radio-option {
                 display: flex;
                 align-items: center;
-                padding: 15px;
-                background: var(--bg-tertiary);
-                border: 2px solid var(--border-primary);
-                border-radius: 8px;
+                justify-content: center;
+                gap: 6px;
+                padding: 10px 16px;
+                margin: 0;
+                background: transparent;
+                border: none;
+                border-radius: 6px;
                 cursor: pointer;
-                transition: all 0.2s ease;
+                transition: all 0.2s ease-out;
+                white-space: nowrap;
+                -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
+                position: relative;
+                flex: 1;
+                min-width: 0;
             }
 
-            .radio-option:hover {
-                background: var(--bg-hover);
-                border-color: var(--primary-color);
+            .dark-mode-group .radio-option:hover {
+                background: rgba(0, 122, 255, 0.1);
             }
 
-            .radio-option input[type="radio"] {
-                margin-right: 12px;
-                width: 18px;
-                height: 18px;
-                cursor: pointer;
+            .dark-mode-group .radio-option input[type="radio"] {
+                position: absolute;
+                opacity: 0;
+                pointer-events: none;
             }
 
-            .radio-option input[type="radio"]:checked {
-                accent-color: var(--primary-color);
+            .dark-mode-group .radio-option .theme-icon {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+                color: var(--text-secondary);
+                transition: color 0.2s ease-out;
             }
 
-            .radio-content {
-                display: flex;
-                flex-direction: column;
-                gap: 4px;
-            }
-
-            .radio-label {
+            .dark-mode-group .radio-option .radio-label {
                 font-size: 15px;
                 font-weight: 500;
-                color: var(--text-primary);
+                color: var(--text-secondary);
+                transition: color 0.2s ease-out;
+                line-height: 1;
             }
 
-            .radio-description {
-                font-size: 13px;
+            /* Active state styling */
+            .dark-mode-group .radio-option:has(input[type="radio"]:checked) {
+                background: var(--primary-color);
+            }
+
+            .dark-mode-group .radio-option:has(input[type="radio"]:checked) .theme-icon,
+            .dark-mode-group .radio-option:has(input[type="radio"]:checked) .radio-label {
+                color: #ffffff;
+            }
+
+            .dark-mode-group .radio-option:has(input[type="radio"]:checked):hover {
+                background: var(--primary-color);
+            }
+
+            .dark-mode-group .radio-option:has(input[type="radio"]:checked):active {
+                background: #0051d5;
+            }
+
+            /* Compact mode group styling */
+            .compact-mode-group {
+                margin-bottom: 30px;
+            }
+
+            .compact-mode-options {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 4px;
+                margin-top: 15px;
+                background: var(--bg-secondary);
+                padding: 4px;
+                border-radius: 8px;
+                width: fit-content;
+            }
+
+            .compact-mode-group .radio-option {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 10px 16px;
+                margin: 0;
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease-out;
+                white-space: nowrap;
+                -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
+                position: relative;
+                flex: 1;
+                min-width: 0;
+            }
+
+            .compact-mode-group .radio-option:hover {
+                background: rgba(0, 122, 255, 0.1);
+            }
+
+            .compact-mode-group .radio-option input[type="radio"] {
+                position: absolute;
+                opacity: 0;
+                pointer-events: none;
+            }
+
+            .compact-mode-group .radio-option .mode-icon {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
                 color: var(--text-secondary);
+                transition: color 0.2s ease-out;
+            }
+
+            .compact-mode-group .radio-option .radio-label {
+                font-size: 15px;
+                font-weight: 500;
+                color: var(--text-secondary);
+                transition: color 0.2s ease-out;
+                line-height: 1;
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) {
+                background: var(--primary-color);
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) .mode-icon,
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked) .radio-label {
+                color: #ffffff;
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked):hover {
+                background: var(--primary-color);
+            }
+
+            .compact-mode-group .radio-option:has(input[type="radio"]:checked):active {
+                background: #0051d5;
             }
 
             .btn-danger {
@@ -2650,6 +2883,12 @@ async def root():
                     gap: 12px;
                 }
 
+                /* Compact mode - mobile */
+                body.compact-mode .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(95px, 1fr));
+                    gap: 10px;
+                }
+
                 /* Typography adjustments */
                 h1 {
                     font-size: 20px;
@@ -2671,6 +2910,11 @@ async def root():
                 button {
                     min-height: 44px;
                     font-size: 15px;
+                    padding: 12px 16px;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    hyphens: auto;
                 }
 
                 /* Downloads button group - stack vertically on mobile */
@@ -2724,7 +2968,26 @@ async def root():
                 /* Library item buttons - larger */
                 .library-item button {
                     min-height: 40px;
-                    font-size: 14px;
+                    font-size: 13px;
+                    padding: 8px 6px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+
+                .library-item .btn-group button {
+                    font-size: 12px;
+                    padding: 8px 4px;
+                }
+
+                .library-item .btn-primary,
+                .library-item .btn-secondary {
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    hyphens: auto;
+                    line-height: 1.3;
+                    padding: 10px 8px;
                 }
 
                 /* Search container - full width */
@@ -2801,16 +3064,51 @@ async def root():
                 }
 
                 /* Dark mode radio options - more compact on mobile */
-                .radio-option {
-                    padding: 12px;
+                .dark-mode-options {
+                    width: 100%;
+                    gap: 4px;
+                    padding: 4px;
                 }
 
-                .radio-label {
+                .dark-mode-group .radio-option {
+                    padding: 12px 8px;
+                    flex: 1;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .dark-mode-group .radio-option .radio-label {
                     font-size: 14px;
                 }
 
-                .radio-description {
-                    font-size: 12px;
+                .dark-mode-group .radio-option .theme-icon {
+                    width: 15px;
+                    height: 15px;
+                }
+
+                /* Compact mode radio options - mobile */
+                .compact-mode-options {
+                    width: 100%;
+                    gap: 4px;
+                    padding: 4px;
+                }
+
+                .compact-mode-group .radio-option {
+                    padding: 12px 8px;
+                    flex: 1;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .compact-mode-group .radio-option .radio-label {
+                    font-size: 14px;
+                }
+
+                .compact-mode-group .radio-option .mode-icon {
+                    width: 15px;
+                    height: 15px;
                 }
 
                 /* Scrollable tabs on mobile - hide scrollbar for cleaner look */
@@ -2843,6 +3141,24 @@ async def root():
                     gap: 10px;
                 }
 
+                /* Compact mode - extra small mobile */
+                body.compact-mode .library-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+                    gap: 8px;
+                }
+
+                /* Compact mode: smaller button text for cramped layout */
+                body.compact-mode .library-item button {
+                    font-size: 10px;
+                    padding: 6px 3px;
+                    min-height: 32px;
+                }
+
+                body.compact-mode .library-item .btn-group button {
+                    font-size: 9px;
+                    padding: 6px 2px;
+                }
+
                 .container {
                     padding: 12px;
                 }
@@ -2865,44 +3181,44 @@ async def root():
 
             <!-- View Navigation -->
             <!-- Desktop Navigation (hidden on mobile) -->
-            <div class="nav-tabs desktop-nav">
-                <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
-                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
-                <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
-                <button class="nav-tab" onclick="switchView('search', this)">Search</button>
-                <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
+            <div class="nav-tabs desktop-nav" role="tablist">
+                <button class="nav-tab active" onclick="switchView('library', this)" role="tab" aria-selected="true" aria-label="Navigate to Library Browser">Library Browser</button>
+                <button class="nav-tab" onclick="switchView('monitor', this)" role="tab" aria-selected="false" aria-label="Navigate to Monitor">Monitor</button>
+                <button class="nav-tab" onclick="switchView('downloads', this)" role="tab" aria-selected="false" aria-label="Navigate to URL Downloads">URL Downloads</button>
+                <button class="nav-tab" onclick="switchView('search', this)" role="tab" aria-selected="false" aria-label="Navigate to Search">Search</button>
+                <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;" role="tab" aria-selected="false" aria-label="Navigate to Settings">Settings</button>
             </div>
 
             <!-- Mobile Bottom Navigation (hidden on desktop) -->
-            <nav class="mobile-bottom-nav">
-                <button class="bottom-nav-item active" onclick="switchView('library', this)" data-view="library">
+            <nav class="mobile-bottom-nav" role="tablist">
+                <button class="bottom-nav-item active" onclick="switchView('library', this)" data-view="library" role="tab" aria-selected="true" aria-label="Navigate to Library Browser">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
                         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
                     </svg>
                     <span class="bottom-nav-label">Library</span>
                 </button>
-                <button class="bottom-nav-item" onclick="switchView('monitor', this)" data-view="monitor">
+                <button class="bottom-nav-item" onclick="switchView('monitor', this)" data-view="monitor" role="tab" aria-selected="false" aria-label="Navigate to Monitor">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
                     </svg>
                     <span class="bottom-nav-label">Monitor</span>
                 </button>
-                <button class="bottom-nav-item" onclick="switchView('downloads', this)" data-view="downloads">
+                <button class="bottom-nav-item" onclick="switchView('downloads', this)" data-view="downloads" role="tab" aria-selected="false" aria-label="Navigate to URL Downloads">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
                         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
                     </svg>
                     <span class="bottom-nav-label">URLs</span>
                 </button>
-                <button class="bottom-nav-item" onclick="switchView('search', this)" data-view="search">
+                <button class="bottom-nav-item" onclick="switchView('search', this)" data-view="search" role="tab" aria-selected="false" aria-label="Navigate to Search">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="11" cy="11" r="8"></circle>
                         <path d="m21 21-4.35-4.35"></path>
                     </svg>
                     <span class="bottom-nav-label">Search</span>
                 </button>
-                <button class="bottom-nav-item" onclick="switchView('settings', this)" data-view="settings">
+                <button class="bottom-nav-item" onclick="switchView('settings', this)" data-view="settings" role="tab" aria-selected="false" aria-label="Navigate to Settings">
                     <svg class="bottom-nav-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                         <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
                         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -2919,39 +3235,39 @@ async def root():
                 <div id="libraryError" class="library-error" style="display:none;"></div>
 
                 <!-- Library Type Tabs -->
-                <div class="nav-tabs">
-                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)" ontouchstart="">Albums</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)" ontouchstart="">Playlists</button>
-                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)" ontouchstart="">Songs</button>
+                <div class="nav-tabs" role="tablist">
+                    <button class="nav-tab active" onclick="switchLibraryTab('albums', this)" ontouchstart="" role="tab" aria-selected="true" aria-label="View Albums">Albums</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('playlists', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View Playlists">Playlists</button>
+                    <button class="nav-tab" onclick="switchLibraryTab('songs', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View Songs">Songs</button>
                 </div>
 
                 <!-- Albums Tab -->
                 <div id="albumsTab" class="tab-content active">
-                    <div id="albumsLoading" class="loading">Loading albums...</div>
-                    <div id="albumsGrid" class="library-grid"></div>
-                    <div id="albumsEmpty" class="library-empty" style="display:none;">No albums found in your library</div>
+                    <div id="albumsLoading" class="loading" role="status" aria-live="polite">Loading albums...</div>
+                    <div id="albumsGrid" class="library-grid" role="region" aria-label="Albums library"></div>
+                    <div id="albumsEmpty" class="library-empty" style="display:none;" role="status">No albums found in your library</div>
                     <div id="albumsLoadMore" class="load-more" style="display:none;">
-                        <button onclick="loadMoreAlbums()">Load More</button>
+                        <button onclick="loadMoreAlbums()" aria-label="Load more albums">Load More</button>
                     </div>
                 </div>
 
                 <!-- Playlists Tab -->
                 <div id="playlistsTab" class="tab-content">
-                    <div id="playlistsLoading" class="loading">Loading playlists...</div>
-                    <div id="playlistsGrid" class="library-grid"></div>
-                    <div id="playlistsEmpty" class="library-empty" style="display:none;">No playlists found in your library</div>
+                    <div id="playlistsLoading" class="loading" role="status" aria-live="polite">Loading playlists...</div>
+                    <div id="playlistsGrid" class="library-grid" role="region" aria-label="Playlists library"></div>
+                    <div id="playlistsEmpty" class="library-empty" style="display:none;" role="status">No playlists found in your library</div>
                     <div id="playlistsLoadMore" class="load-more" style="display:none;">
-                        <button onclick="loadMorePlaylists()">Load More</button>
+                        <button onclick="loadMorePlaylists()" aria-label="Load more playlists">Load More</button>
                     </div>
                 </div>
 
                 <!-- Songs Tab -->
                 <div id="songsTab" class="tab-content">
-                    <div id="songsLoading" class="loading">Loading songs...</div>
-                    <div id="songsGrid" class="library-grid"></div>
-                    <div id="songsEmpty" class="library-empty" style="display:none;">No songs found in your library</div>
+                    <div id="songsLoading" class="loading" role="status" aria-live="polite">Loading songs...</div>
+                    <div id="songsGrid" class="library-grid" role="region" aria-label="Songs library"></div>
+                    <div id="songsEmpty" class="library-empty" style="display:none;" role="status">No songs found in your library</div>
                     <div id="songsLoadMore" class="load-more" style="display:none;">
-                        <button onclick="loadMoreSongs()">Load More</button>
+                        <button onclick="loadMoreSongs()" aria-label="Load more songs">Load More</button>
                     </div>
                 </div>
             </div>
@@ -2967,16 +3283,16 @@ async def root():
                 </div>
 
                 <div class="button-group downloads-button-group">
-                    <button type="submit" id="downloadBtn">Start Download</button>
-                    <button type="button" id="cancelBtn" class="cancel" disabled>Cancel</button>
-                    <button type="button" onclick="window.open('https://music.apple.com/au/home', '_blank')" style="background: #FA243C;">Open Apple Music</button>
+                    <button type="submit" id="downloadBtn" aria-label="Start downloading URLs">Start Download</button>
+                    <button type="button" id="cancelBtn" class="cancel" disabled aria-label="Cancel current download">Cancel</button>
+                    <button type="button" onclick="window.open('https://music.apple.com/au/home', '_blank')" style="background: #FA243C;" aria-label="Open Apple Music in new tab">Open Apple Music</button>
                 </div>
             </form>
 
-            <div id="progressContainer" class="progress-container">
+            <div id="progressContainer" class="progress-container" role="region" aria-label="Download progress">
                 <div class="status-bar">
                     <div id="statusIndicator" class="status-indicator"></div>
-                    <div id="statusText">Idle</div>
+                    <div id="statusText" role="status" aria-live="polite">Idle</div>
                 </div>
                 <div class="progress-stats">
                     <div class="stat-item">
@@ -3000,7 +3316,7 @@ async def root():
                         <div class="stat-label">Progress</div>
                     </div>
                 </div>
-                <div id="progressLog" class="progress-log"></div>
+                <div id="progressLog" class="progress-log" role="log" aria-live="polite" aria-label="Download activity log"></div>
             </div>
             </div> <!-- End of downloadsView -->
 
@@ -3159,7 +3475,31 @@ async def root():
                     </div>
                 </div>
 
-                <h3>Queue Behavior</h3>
+                <h3>Queue Options</h3>
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" id="autoClearQueue" name="autoClearQueue" onchange="toggleAutoClearSettings()">
+                        <span>Auto-clear completed queue items</span>
+                    </label>
+                    <small>Automatically remove completed and failed items from the queue after a set time</small>
+                </div>
+
+                <div id="autoClearSettings" style="display: none;">
+                    <div class="form-group">
+                        <label for="autoClearInterval">Clear Interval</label>
+                        <select id="autoClearInterval" name="autoClearInterval">
+                            <option value="30">Every 30 minutes</option>
+                            <option value="60" selected>Every 1 hour</option>
+                            <option value="180">Every 3 hours</option>
+                            <option value="360">Every 6 hours</option>
+                            <option value="720">Every 12 hours</option>
+                            <option value="1440">Every 24 hours</option>
+                            <option value="2880">Every 48 hours</option>
+                        </select>
+                        <small>How often to automatically clear completed items</small>
+                    </div>
+                </div>
+
                 <div class="form-group checkbox-group">
                     <label>
                         <input type="checkbox" id="continueOnError" name="continueOnError">
@@ -3176,31 +3516,31 @@ async def root():
                     <small>Choose the color for buttons, active tabs, and highlights</small>
 
                     <div class="color-swatches">
-                        <button type="button" class="color-swatch active" data-color="#007aff" data-name="Blue" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch active" data-color="#007aff" data-name="Blue" onclick="selectColorTheme(this)" aria-label="Select Blue theme">
                             <div class="swatch-color" style="background: #007aff;"></div>
                             <div class="swatch-name">Blue</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#8e44ad" data-name="Purple" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#8e44ad" data-name="Purple" onclick="selectColorTheme(this)" aria-label="Select Purple theme">
                             <div class="swatch-color" style="background: #8e44ad;"></div>
                             <div class="swatch-name">Purple</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#34c759" data-name="Green" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#34c759" data-name="Green" onclick="selectColorTheme(this)" aria-label="Select Green theme">
                             <div class="swatch-color" style="background: #34c759;"></div>
                             <div class="swatch-name">Green</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#ff9500" data-name="Orange" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#ff9500" data-name="Orange" onclick="selectColorTheme(this)" aria-label="Select Orange theme">
                             <div class="swatch-color" style="background: #ff9500;"></div>
                             <div class="swatch-name">Orange</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#ff2d55" data-name="Pink" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#ff2d55" data-name="Pink" onclick="selectColorTheme(this)" aria-label="Select Pink theme">
                             <div class="swatch-color" style="background: #ff2d55;"></div>
                             <div class="swatch-name">Pink</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#5ac8fa" data-name="Teal" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#5ac8fa" data-name="Teal" onclick="selectColorTheme(this)" aria-label="Select Teal theme">
                             <div class="swatch-color" style="background: #5ac8fa;"></div>
                             <div class="swatch-name">Teal</div>
                         </button>
-                        <button type="button" class="color-swatch" data-color="#ff3b30" data-name="Red" onclick="selectColorTheme(this)">
+                        <button type="button" class="color-swatch" data-color="#ff3b30" data-name="Red" onclick="selectColorTheme(this)" aria-label="Select Red theme">
                             <div class="swatch-color" style="background: #ff3b30;"></div>
                             <div class="swatch-name">Red</div>
                         </button>
@@ -3215,36 +3555,89 @@ async def root():
                     <small>Choose how the interface appears</small>
 
                     <div class="dark-mode-options">
-                        <label class="radio-option">
+                        <label class="radio-option" data-theme="auto" aria-label="Select auto dark mode">
                             <input type="radio" name="darkMode" value="auto" checked onchange="selectDarkMode(this)">
-                            <div class="radio-content">
-                                <span class="radio-label">Automatic</span>
-                                <span class="radio-description">Follows system preference</span>
-                            </div>
+                            <svg class="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="5"></circle>
+                                <line x1="12" y1="1" x2="12" y2="3"></line>
+                                <line x1="12" y1="21" x2="12" y2="23"></line>
+                                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                                <line x1="1" y1="12" x2="3" y2="12"></line>
+                                <line x1="21" y1="12" x2="23" y2="12"></line>
+                                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                            </svg>
+                            <span class="radio-label">Auto</span>
                         </label>
 
-                        <label class="radio-option">
+                        <label class="radio-option" data-theme="light" aria-label="Select light mode">
                             <input type="radio" name="darkMode" value="light" onchange="selectDarkMode(this)">
-                            <div class="radio-content">
-                                <span class="radio-label">Light</span>
-                                <span class="radio-description">Always use light mode</span>
-                            </div>
+                            <svg class="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="5"></circle>
+                                <line x1="12" y1="1" x2="12" y2="3"></line>
+                                <line x1="12" y1="21" x2="12" y2="23"></line>
+                                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                                <line x1="1" y1="12" x2="3" y2="12"></line>
+                                <line x1="21" y1="12" x2="23" y2="12"></line>
+                                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                            </svg>
+                            <span class="radio-label">Light</span>
                         </label>
 
-                        <label class="radio-option">
+                        <label class="radio-option" data-theme="dark" aria-label="Select dark mode">
                             <input type="radio" name="darkMode" value="dark" onchange="selectDarkMode(this)">
-                            <div class="radio-content">
-                                <span class="radio-label">Dark</span>
-                                <span class="radio-description">Always use dark mode</span>
-                            </div>
+                            <svg class="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                            </svg>
+                            <span class="radio-label">Dark</span>
                         </label>
                     </div>
 
                     <input type="hidden" id="darkModePreference" name="darkModePreference" value="auto">
                 </div>
 
+                <!-- Compact Mode Settings -->
+                <div class="form-group compact-mode-group">
+                    <label>Grid Density</label>
+                    <small>Choose how much content to display in grids</small>
+
+                    <div class="compact-mode-options">
+                        <label class="radio-option" data-mode="normal" aria-label="Select normal grid density">
+                            <input type="radio" name="compactMode" value="normal" checked onchange="selectCompactMode(this)">
+                            <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="3" width="7" height="7"></rect>
+                                <rect x="14" y="3" width="7" height="7"></rect>
+                                <rect x="3" y="14" width="7" height="7"></rect>
+                                <rect x="14" y="14" width="7" height="7"></rect>
+                            </svg>
+                            <span class="radio-label">Normal</span>
+                        </label>
+
+                        <label class="radio-option" data-mode="compact" aria-label="Select compact grid density">
+                            <input type="radio" name="compactMode" value="compact" onchange="selectCompactMode(this)">
+                            <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="2" width="6" height="6"></rect>
+                                <rect x="10" y="2" width="6" height="6"></rect>
+                                <rect x="18" y="2" width="4" height="6"></rect>
+                                <rect x="2" y="10" width="6" height="6"></rect>
+                                <rect x="10" y="10" width="6" height="6"></rect>
+                                <rect x="18" y="10" width="4" height="6"></rect>
+                                <rect x="2" y="18" width="6" height="4"></rect>
+                                <rect x="10" y="18" width="6" height="4"></rect>
+                                <rect x="18" y="18" width="4" height="4"></rect>
+                            </svg>
+                            <span class="radio-label">Compact</span>
+                        </label>
+                    </div>
+
+                    <input type="hidden" id="compactModePreference" name="compactModePreference" value="normal">
+                </div>
+
                 <div class="button-group">
-                    <button type="button" onclick="saveAllSettings()">Save Settings</button>
+                    <button type="button" onclick="saveAllSettings()" aria-label="Save all settings">Save Settings</button>
                 </div>
             </div>
 
@@ -3283,8 +3676,8 @@ async def root():
                                     </label>
                                     <small class="toggle-label">Pause/Resume Monitoring</small>
                                 </div>
-                                <button onclick="manualCheckPlaylist()" class="btn-secondary">Check Now</button>
-                                <button onclick="stopMonitoring()" class="btn-danger">Stop Monitoring</button>
+                                <button onclick="manualCheckPlaylist()" class="btn-secondary" aria-label="Manually check playlist for new tracks">Check Now</button>
+                                <button onclick="stopMonitoring()" class="btn-danger" aria-label="Stop monitoring playlist">Stop Monitoring</button>
                             </div>
                         </div>
 
@@ -3312,7 +3705,7 @@ async def root():
                 <!-- Activity Log -->
                 <div class="activity-log-section">
                     <h3>Activity Log</h3>
-                    <div id="activityLog" class="activity-log">
+                    <div id="activityLog" class="activity-log" role="log" aria-live="polite" aria-label="Monitor activity log">
                         <p class="activity-empty">No activity yet</p>
                     </div>
                 </div>
@@ -3326,29 +3719,29 @@ async def root():
                 <div class="search-container">
                     <input type="text" id="searchInput" placeholder="Search for artists, albums, or songs..."
                            onkeypress="if(event.key === 'Enter') performSearch()">
-                    <button onclick="performSearch()" class="btn-primary">Search</button>
+                    <button onclick="performSearch()" class="btn-primary" aria-label="Perform search">Search</button>
                 </div>
 
                 <!-- Search Result Tabs -->
-                <div class="nav-tabs" style="margin-top: 20px;">
-                    <button class="nav-tab active" onclick="switchSearchTab('all', this)" ontouchstart="">All</button>
-                    <button class="nav-tab" onclick="switchSearchTab('songs', this)" ontouchstart="">Songs</button>
-                    <button class="nav-tab" onclick="switchSearchTab('albums', this)" ontouchstart="">Albums</button>
-                    <button class="nav-tab" onclick="switchSearchTab('artists', this)" ontouchstart="">Artists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)" ontouchstart="">Playlists</button>
-                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)" ontouchstart="">Music Videos</button>
-                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)" ontouchstart="">Podcasts</button>
+                <div class="nav-tabs" style="margin-top: 20px;" role="tablist">
+                    <button class="nav-tab active" onclick="switchSearchTab('all', this)" ontouchstart="" role="tab" aria-selected="true" aria-label="View all search results">All</button>
+                    <button class="nav-tab" onclick="switchSearchTab('songs', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View song search results">Songs</button>
+                    <button class="nav-tab" onclick="switchSearchTab('albums', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View album search results">Albums</button>
+                    <button class="nav-tab" onclick="switchSearchTab('artists', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View artist search results">Artists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('playlists', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View playlist search results">Playlists</button>
+                    <button class="nav-tab" onclick="switchSearchTab('music-videos', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View music video search results">Music Videos</button>
+                    <button class="nav-tab" onclick="switchSearchTab('podcasts', this)" ontouchstart="" role="tab" aria-selected="false" aria-label="View podcast search results">Podcasts</button>
                 </div>
 
                 <!-- Error Display -->
                 <div id="searchError" class="error-message" style="display:none;"></div>
 
                 <!-- Search Results Container -->
-                <div id="searchResults">
+                <div id="searchResults" role="region" aria-label="Search results">
                     <!-- All Results Tab -->
                     <div id="allTab" class="tab-content active">
-                        <div id="allLoading" class="loading">Searching...</div>
-                        <div id="allEmpty" class="library-empty" style="display:none;">
+                        <div id="allLoading" class="loading" role="status" aria-live="polite">Searching...</div>
+                        <div id="allEmpty" class="library-empty" style="display:none;" role="status">
                             <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
                                 <circle cx="11" cy="11" r="8"></circle>
                                 <path d="m21 21-4.35-4.35"></path>
@@ -3361,49 +3754,49 @@ async def root():
 
                     <!-- Songs Tab -->
                     <div id="songsSearchTab" class="tab-content">
-                        <div id="songsSearchLoading" class="loading">Loading songs...</div>
-                        <div id="songsSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="songsSearchLoading" class="loading" role="status" aria-live="polite">Loading songs...</div>
+                        <div id="songsSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No songs found</p>
                         </div>
                         <div id="songsSearchGrid" class="library-grid"></div>
                         <div id="songsSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('songs')">Load More</button>
+                            <button onclick="loadMoreSearchResults('songs')" aria-label="Load more song search results">Load More</button>
                         </div>
                     </div>
 
                     <!-- Albums Tab -->
                     <div id="albumsSearchTab" class="tab-content">
-                        <div id="albumsSearchLoading" class="loading">Loading albums...</div>
-                        <div id="albumsSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="albumsSearchLoading" class="loading" role="status" aria-live="polite">Loading albums...</div>
+                        <div id="albumsSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No albums found</p>
                         </div>
                         <div id="albumsSearchGrid" class="library-grid"></div>
                         <div id="albumsSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('albums')">Load More</button>
+                            <button onclick="loadMoreSearchResults('albums')" aria-label="Load more album search results">Load More</button>
                         </div>
                     </div>
 
                     <!-- Artists Tab -->
                     <div id="artistsSearchTab" class="tab-content">
-                        <div id="artistsSearchLoading" class="loading">Loading artists...</div>
-                        <div id="artistsSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="artistsSearchLoading" class="loading" role="status" aria-live="polite">Loading artists...</div>
+                        <div id="artistsSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No artists found</p>
                         </div>
                         <div id="artistsSearchGrid" class="library-grid"></div>
                         <div id="artistsSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('artists')">Load More</button>
+                            <button onclick="loadMoreSearchResults('artists')" aria-label="Load more artist search results">Load More</button>
                         </div>
                     </div>
 
                     <!-- Playlists Tab -->
                     <div id="playlistsSearchTab" class="tab-content">
-                        <div id="playlistsSearchLoading" class="loading">Loading playlists...</div>
-                        <div id="playlistsSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="playlistsSearchLoading" class="loading" role="status" aria-live="polite">Loading playlists...</div>
+                        <div id="playlistsSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No playlists found</p>
                         </div>
                         <div id="playlistsSearchGrid" class="library-grid"></div>
                         <div id="playlistsSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('playlists')">Load More</button>
+                            <button onclick="loadMoreSearchResults('playlists')" aria-label="Load more playlist search results">Load More</button>
                         </div>
                     </div>
 
@@ -3417,46 +3810,46 @@ async def root():
                                 add to your system PATH, and restart the server. Downloads will fail without it.
                             </small>
                         </div>
-                        <div id="musicVideosSearchLoading" class="loading">Loading music videos...</div>
-                        <div id="musicVideosSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="musicVideosSearchLoading" class="loading" role="status" aria-live="polite">Loading music videos...</div>
+                        <div id="musicVideosSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No music videos found</p>
                         </div>
                         <div id="musicVideosSearchGrid" class="library-grid"></div>
                         <div id="musicVideosSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('music-videos')">Load More</button>
+                            <button onclick="loadMoreSearchResults('music-videos')" aria-label="Load more music video search results">Load More</button>
                         </div>
                     </div>
 
                     <!-- Podcasts Tab -->
                     <div id="podcastsSearchTab" class="tab-content">
-                        <div id="podcastsSearchLoading" class="loading">Loading podcasts...</div>
-                        <div id="podcastsSearchEmpty" class="library-empty" style="display:none;">
+                        <div id="podcastsSearchLoading" class="loading" role="status" aria-live="polite">Loading podcasts...</div>
+                        <div id="podcastsSearchEmpty" class="library-empty" style="display:none;" role="status">
                             <p>No podcasts found</p>
                         </div>
                         <div id="podcastsSearchGrid" class="library-grid"></div>
                         <div id="podcastsSearchLoadMore" class="load-more" style="display:none;">
-                            <button onclick="loadMoreSearchResults('podcasts')">Load More</button>
+                            <button onclick="loadMoreSearchResults('podcasts')" aria-label="Load more podcast search results">Load More</button>
                         </div>
                     </div>
                 </div>
             </div>
 
             <!-- Queue Side Panel -->
-            <div id="queuePanel" class="queue-panel">
+            <div id="queuePanel" class="queue-panel" role="complementary" aria-label="Download queue panel">
                 <div class="queue-header">
                     <h3>Download Queue</h3>
                     <button id="queueCloseBtn" onclick="closeQueuePanel()" aria-label="Close Queue">&times;</button>
                 </div>
 
                 <div class="queue-controls">
-                    <button id="pauseQueueBtn" onclick="pauseQueue()" class="queue-control-btn">
+                    <button id="pauseQueueBtn" onclick="pauseQueue()" class="queue-control-btn" aria-label="Pause download queue">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="6" y="4" width="4" height="16"></rect>
                             <rect x="14" y="4" width="4" height="16"></rect>
                         </svg>
                         Pause
                     </button>
-                    <button onclick="clearCompleted()" class="queue-control-btn clear-btn">
+                    <button onclick="clearCompleted()" class="queue-control-btn clear-btn" aria-label="Clear completed downloads from queue">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -3465,18 +3858,18 @@ async def root():
                     </button>
                 </div>
 
-                <div class="queue-status">
+                <div class="queue-status" role="status" aria-label="Queue statistics">
                     <div class="queue-stat">
                         <span class="queue-stat-label">Queued:</span>
-                        <span id="queuedCount" class="queue-stat-value">0</span>
+                        <span id="queuedCount" class="queue-stat-value" aria-label="Number of queued downloads">0</span>
                     </div>
                     <div class="queue-stat">
                         <span class="queue-stat-label">Downloading:</span>
-                        <span id="downloadingCount" class="queue-stat-value">0</span>
+                        <span id="downloadingCount" class="queue-stat-value" aria-label="Number of active downloads">0</span>
                     </div>
                     <div class="queue-stat">
                         <span class="queue-stat-label">Completed:</span>
-                        <span id="completedCount" class="queue-stat-value">0</span>
+                        <span id="completedCount" class="queue-stat-value" aria-label="Number of completed downloads">0</span>
                     </div>
                 </div>
 
@@ -3506,22 +3899,22 @@ async def root():
             <div id="queueBackdrop" onclick="closeQueuePanel()"></div>
 
             <!-- Episode Modal -->
-            <div id="episodeModal" class="modal" style="display:none;">
+            <div id="episodeModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="episodeModalTitle">
                 <div class="modal-content" style="max-width: 900px;">
                     <div class="modal-header">
                         <h3 id="episodeModalTitle">Podcast Episodes</h3>
-                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: var(--text-secondary);">&times;</button>
+                        <button onclick="closeEpisodeModal()" style="background: none; border: none; font-size: 28px; cursor: pointer; color: var(--text-secondary);" aria-label="Close episode modal">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
-                        <div id="episodeList" style="max-height: 600px; overflow-y: auto;"></div>
+                        <div id="episodeList"></div>
                         <div id="episodeEmpty" class="library-empty" style="display:none;">
                             <p>No episodes found</p>
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button onclick="downloadAllPodcastEpisodes()" class="btn-primary">Download All Episodes</button>
-                        <button onclick="closeEpisodeModal()" class="btn-secondary">Close</button>
+                        <button onclick="downloadAllPodcastEpisodes()" class="btn-primary" aria-label="Download all podcast episodes">Download All Episodes</button>
+                        <button onclick="closeEpisodeModal()" class="btn-secondary" aria-label="Close episode list">Close</button>
                     </div>
                 </div>
             </div>
@@ -3852,20 +4245,17 @@ async def root():
 
                 // Update desktop nav tabs
                 document.querySelectorAll('.desktop-nav .nav-tab').forEach(tab => {
-                    tab.classList.remove('active');
+                    const isActive = tab === clickedElement;
+                    tab.classList.toggle('active', isActive);
+                    tab.setAttribute('aria-selected', isActive);
                 });
-                if (clickedElement && clickedElement.classList.contains('nav-tab')) {
-                    clickedElement.classList.add('active');
-                }
 
                 // Update mobile bottom nav active state
                 document.querySelectorAll('.bottom-nav-item').forEach(item => {
-                    item.classList.remove('active');
+                    const isActive = item.getAttribute('data-view') === view;
+                    item.classList.toggle('active', isActive);
+                    item.setAttribute('aria-selected', isActive);
                 });
-                const mobileNavItem = document.querySelector(`.bottom-nav-item[data-view="${view}"]`);
-                if (mobileNavItem) {
-                    mobileNavItem.classList.add('active');
-                }
 
                 // Show/hide views
                 document.getElementById('libraryView').classList.toggle('active', view === 'library');
@@ -3896,10 +4286,11 @@ async def root():
             function switchLibraryTab(tab, clickedElement) {
                 // Update tabs
                 document.querySelectorAll('#libraryView .nav-tabs > .nav-tab').forEach(t => {
-                    t.classList.remove('active');
+                    const isActive = t === clickedElement;
+                    t.classList.toggle('active', isActive);
+                    t.setAttribute('aria-selected', isActive);
                 });
                 if (clickedElement) {
-                    clickedElement.classList.add('active');
                     clickedElement.blur();
                 }
 
@@ -4069,6 +4460,9 @@ async def root():
                 const div = document.createElement('div');
                 div.className = 'library-item';
 
+                // Add ARIA label to library item
+                div.setAttribute('aria-label', `${item.name} by ${item.artist || ''}`);
+
                 // Create artwork container with fixed aspect ratio
                 const artworkContainer = document.createElement('div');
                 artworkContainer.className = 'library-item-artwork';
@@ -4103,6 +4497,7 @@ async def root():
                         const mainBtn = document.createElement('button');
                         mainBtn.textContent = 'Library Tracks';
                         mainBtn.className = 'btn-primary';
+                        mainBtn.setAttribute('aria-label', `View tracks for ${item.name}`);
                         mainBtn.onclick = (e) => {
                             e.stopPropagation();
                             downloadLibraryItem(item.id, type, item.name, item.artist, false);
@@ -4111,6 +4506,7 @@ async def root():
                         const fullBtn = document.createElement('button');
                         fullBtn.textContent = 'Full Album';
                         fullBtn.className = 'btn-secondary';
+                        fullBtn.setAttribute('aria-label', `Download full album ${item.name}`);
                         fullBtn.onclick = (e) => {
                             e.stopPropagation();
                             downloadLibraryItem(item.id, type, item.name, item.artist, true);
@@ -4123,6 +4519,7 @@ async def root():
                         const btn = document.createElement('button');
                         btn.textContent = 'Download';
                         btn.className = 'btn-primary';
+                        btn.setAttribute('aria-label', `Download playlist ${item.name}`);
                         btn.onclick = (e) => {
                             e.stopPropagation();
                             downloadLibraryItem(item.id, type, item.name, item.artist, false);
@@ -4139,6 +4536,7 @@ async def root():
                     // For songs, just a single download button
                     const btn = document.createElement('button');
                     btn.textContent = 'Download';
+                    btn.setAttribute('aria-label', `Download song ${item.name}`);
                     btn.onclick = () => downloadLibraryItem(item.id, type, item.name, item.artist, false);
 
                     div.appendChild(artworkContainer);
@@ -4244,26 +4642,32 @@ async def root():
                     'podcasts': 0
                 };
 
-                document.getElementById('allLoading').style.display = 'block';
-                document.getElementById('allGrid').innerHTML = '';
-                document.getElementById('allEmpty').style.display = 'none';
-                document.getElementById('searchError').style.display = 'none';
+                // If on a specific tab, load results for that tab
+                if (currentSearchTab && currentSearchTab !== 'all') {
+                    await loadSearchTabResults(currentSearchTab);
+                } else {
+                    // On "All" tab, show overview of all types
+                    document.getElementById('allLoading').style.display = 'block';
+                    document.getElementById('allGrid').innerHTML = '';
+                    document.getElementById('allEmpty').style.display = 'none';
+                    document.getElementById('searchError').style.display = 'none';
 
-                try {
-                    const response = await fetch(`/api/search?term=${encodeURIComponent(query)}&limit=25`);
+                    try {
+                        const response = await fetch(`/api/search?term=${encodeURIComponent(query)}&limit=25`);
 
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Search failed');
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || 'Search failed');
+                        }
+
+                        const data = await response.json();
+                        displayAllResults(data);
+
+                    } catch (error) {
+                        document.getElementById('allLoading').style.display = 'none';
+                        document.getElementById('searchError').textContent = error.message;
+                        document.getElementById('searchError').style.display = 'block';
                     }
-
-                    const data = await response.json();
-                    displayAllResults(data);
-
-                } catch (error) {
-                    document.getElementById('allLoading').style.display = 'none';
-                    document.getElementById('searchError').textContent = error.message;
-                    document.getElementById('searchError').style.display = 'block';
                 }
             }
 
@@ -4394,6 +4798,7 @@ async def root():
                     viewEpisodesBtn.textContent = 'View Episodes';
                     viewEpisodesBtn.className = 'btn-primary';
                     viewEpisodesBtn.style.width = '100%';
+                    viewEpisodesBtn.setAttribute('aria-label', `View episodes for ${item.name}`);
                     viewEpisodesBtn.onclick = () => viewPodcastEpisodes(item.id, item.name);
                     btnContainer.appendChild(viewEpisodesBtn);
 
@@ -4406,6 +4811,7 @@ async def root():
                     downloadBtn.textContent = 'Download';
                     downloadBtn.className = 'btn-primary';
                     downloadBtn.style.width = '100%';
+                    downloadBtn.setAttribute('aria-label', `Download ${item.name}`);
                     downloadBtn.onclick = () => downloadSearchResult(item, type);
                     btnContainer.appendChild(downloadBtn);
 
@@ -4423,6 +4829,7 @@ async def root():
                     discographyBtn.textContent = 'Download Discography';
                     discographyBtn.className = 'btn-primary';
                     discographyBtn.style.width = '100%';
+                    discographyBtn.setAttribute('aria-label', `Download discography for ${item.name}`);
                     discographyBtn.onclick = () => downloadArtistDiscography(item);
                     btnContainer.appendChild(discographyBtn);
 
@@ -4431,6 +4838,7 @@ async def root():
                     viewBtn.textContent = 'View All Content';
                     viewBtn.className = 'btn-secondary';
                     viewBtn.style.width = '100%';
+                    viewBtn.setAttribute('aria-label', `View all content by ${item.name}`);
                     viewBtn.onclick = () => viewArtistContent(item);
                     btnContainer.appendChild(viewBtn);
 
@@ -4649,6 +5057,7 @@ async def root():
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.setAttribute('data-url', album.url);
+                        checkbox.setAttribute('aria-label', `Select album ${album.name} for download`);
                         checkbox.onchange = function() { toggleArtistItemSelection(this); };
                         checkbox.style.position = 'absolute';
                         checkbox.style.top = '10px';
@@ -4701,6 +5110,7 @@ async def root():
                             const checkbox = document.createElement('input');
                             checkbox.type = 'checkbox';
                             checkbox.setAttribute('data-url', video.url);
+                            checkbox.setAttribute('aria-label', `Select music video ${video.name} for download`);
                             checkbox.onchange = function() { toggleArtistItemSelection(this); };
                             checkbox.style.position = 'absolute';
                             checkbox.style.top = '10px';
@@ -4821,22 +5231,24 @@ async def root():
 
             function switchSearchTab(tab, clickedElement) {
                 const tabs = document.querySelectorAll('#searchView .nav-tabs > .nav-tab');
-                tabs.forEach(t => t.classList.remove('active'));
-                if (clickedElement) {
-                    clickedElement.classList.add('active');
-                    clickedElement.blur();
-                } else {
-                    tabs.forEach(t => {
+                tabs.forEach(t => {
+                    let isActive = false;
+                    if (clickedElement) {
+                        isActive = t === clickedElement;
+                    } else {
                         const tabText = t.textContent.toLowerCase();
-                        if ((tab === 'songs' && tabText === 'songs') ||
-                            (tab === 'albums' && tabText === 'albums') ||
-                            (tab === 'artists' && tabText === 'artists') ||
-                            (tab === 'playlists' && tabText === 'playlists') ||
-                            (tab === 'podcasts' && tabText === 'podcasts') ||
-                            (tab === 'all' && tabText === 'all')) {
-                            t.classList.add('active');
-                        }
-                    });
+                        isActive = (tab === 'songs' && tabText === 'songs') ||
+                                   (tab === 'albums' && tabText === 'albums') ||
+                                   (tab === 'artists' && tabText === 'artists') ||
+                                   (tab === 'playlists' && tabText === 'playlists') ||
+                                   (tab === 'podcasts' && tabText === 'podcasts') ||
+                                   (tab === 'all' && tabText === 'all');
+                    }
+                    t.classList.toggle('active', isActive);
+                    t.setAttribute('aria-selected', isActive);
+                });
+                if (clickedElement) {
+                    clickedElement.blur();
                 }
 
                 document.getElementById('allTab').classList.toggle('active', tab === 'all');
@@ -4980,20 +5392,24 @@ async def root():
 
                 episodes.forEach(episode => {
                     const episodeDiv = document.createElement('div');
-                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #eee;';
+                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--border-primary);';
+
+                    // Add ARIA role and label to episode
+                    const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
+                    const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
+                    episodeDiv.setAttribute('role', 'article');
+                    episodeDiv.setAttribute('aria-label', `${episode.title} - ${date}${duration}`);
 
                     const infoDiv = document.createElement('div');
                     infoDiv.style.flex = '1';
 
                     const title = document.createElement('div');
-                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px;';
+                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px; color: var(--text-primary);';
                     title.textContent = episode.title;
                     infoDiv.appendChild(title);
 
                     const meta = document.createElement('div');
                     meta.style.cssText = 'font-size: 13px; color: var(--text-secondary);';
-                    const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
-                    const duration = episode.duration ? ` • ${Math.floor(episode.duration / 60)} min` : '';
                     meta.textContent = `${date}${duration}`;
                     infoDiv.appendChild(meta);
 
@@ -5003,6 +5419,7 @@ async def root():
                     downloadBtn.textContent = 'Download';
                     downloadBtn.className = 'btn-primary';
                     downloadBtn.style.marginLeft = '15px';
+                    downloadBtn.setAttribute('aria-label', `Download episode ${episode.title}`);
                     downloadBtn.onclick = () => downloadPodcastEpisode(episode.url, episode.title, episode.date);
                     episodeDiv.appendChild(downloadBtn);
 
@@ -5111,6 +5528,7 @@ async def root():
                 // Remove active class from all swatches
                 document.querySelectorAll('.color-swatch').forEach(swatch => {
                     swatch.classList.remove('active');
+                    swatch.style.borderColor = '';
                 });
 
                 // Add active class to selected swatch
@@ -5119,6 +5537,9 @@ async def root():
                 // Get selected color
                 const color = button.getAttribute('data-color');
                 selectedPrimaryColor = color;
+
+                // Set border color to match selected color
+                button.style.borderColor = color;
 
                 // Update hidden input
                 document.getElementById('primaryColor').value = color;
@@ -5214,6 +5635,38 @@ async def root():
                 applyDarkMode(savedPreference);
             }
 
+            // Compact mode management
+            let currentCompactModePreference = 'normal'; // normal, compact
+
+            function selectCompactMode(input) {
+                const value = input.value;
+                currentCompactModePreference = value;
+
+                // Update hidden input
+                document.getElementById('compactModePreference').value = value;
+
+                // Apply compact mode immediately
+                applyCompactMode(value);
+            }
+
+            function applyCompactMode(preference) {
+                if (preference === 'compact') {
+                    document.body.classList.add('compact-mode');
+                } else {
+                    document.body.classList.remove('compact-mode');
+                }
+
+                // Save to localStorage for immediate persistence
+                localStorage.setItem('compact-mode-preference', preference);
+            }
+
+            // Initialize compact mode on page load
+            function initCompactMode() {
+                const savedPreference = localStorage.getItem('compact-mode-preference') || 'normal';
+                currentCompactModePreference = savedPreference;
+                applyCompactMode(savedPreference);
+            }
+
             // Load and save user preferences
             async function loadPreferences() {
                 try {
@@ -5253,8 +5706,10 @@ async def root():
                             document.querySelectorAll('.color-swatch').forEach(swatch => {
                                 if (swatch.getAttribute('data-color') === settings.primary_color) {
                                     swatch.classList.add('active');
+                                    swatch.style.borderColor = settings.primary_color;
                                 } else {
                                     swatch.classList.remove('active');
+                                    swatch.style.borderColor = '';
                                 }
                             });
 
@@ -5276,13 +5731,36 @@ async def root():
                             document.getElementById('darkModePreference').value = settings.dark_mode_preference;
                         }
 
+                        // Load and apply compact mode preference
+                        if (settings.compact_mode_preference) {
+                            currentCompactModePreference = settings.compact_mode_preference;
+                            applyCompactMode(settings.compact_mode_preference);
+
+                            // Set active radio button
+                            document.querySelectorAll('input[name="compactMode"]').forEach(radio => {
+                                radio.checked = (radio.value === settings.compact_mode_preference);
+                            });
+
+                            // Update hidden input
+                            document.getElementById('compactModePreference').value = settings.compact_mode_preference;
+                        }
+
                         // Load auto-search fallback setting
                         if (settings.auto_search_fallback !== undefined) {
                             document.getElementById('autoSearchFallback').checked = settings.auto_search_fallback;
                         }
 
+                        // Load auto-clear queue settings
+                        if (settings.auto_clear_queue !== undefined) {
+                            document.getElementById('autoClearQueue').checked = settings.auto_clear_queue;
+                        }
+                        if (settings.auto_clear_interval !== undefined) {
+                            document.getElementById('autoClearInterval').value = settings.auto_clear_interval.toString();
+                        }
+
                         console.log('Settings loaded from server');
                         toggleRetryDelaySettings();  // Update visibility after loading settings
+                        toggleAutoClearSettings();  // Update auto-clear dropdown visibility
                         return;
                     }
                 } catch (error) {
@@ -5292,6 +5770,7 @@ async def root():
                 // Fallback to localStorage if server request fails
                 loadPreferencesFromLocalStorage();
                 toggleRetryDelaySettings();  // Update visibility after loading settings
+                toggleAutoClearSettings();  // Update auto-clear dropdown visibility
             }
 
             // Fallback function for localStorage (renamed from original loadPreferences)
@@ -5316,6 +5795,10 @@ async def root():
                 const includeVideosInDiscography = localStorage.getItem('gamdl_include_videos_in_discography');
                 const savePlaylist = localStorage.getItem('gamdl_save_playlist');
 
+                // Queue options
+                const autoClearQueue = localStorage.getItem('gamdl_auto_clear_queue');
+                const autoClearInterval = localStorage.getItem('gamdl_auto_clear_interval');
+
                 // Retry/delay options
                 const enableRetryDelay = localStorage.getItem('gamdl_enable_retry_delay');
                 const maxRetries = localStorage.getItem('gamdl_max_retries');
@@ -5339,6 +5822,8 @@ async def root():
                 if (extraTags) document.getElementById('extraTags').checked = extraTags === 'true';
                 if (includeVideosInDiscography === 'true') document.getElementById('includeVideosInDiscography').checked = true;
                 if (savePlaylist === 'true') document.getElementById('savePlaylist').checked = true;
+                if (autoClearQueue) document.getElementById('autoClearQueue').checked = autoClearQueue === 'true';
+                if (autoClearInterval) document.getElementById('autoClearInterval').value = autoClearInterval;
                 if (enableRetryDelay !== null) document.getElementById('enableRetryDelay').checked = enableRetryDelay === 'true';
                 if (maxRetries) document.getElementById('maxRetries').value = maxRetries;
                 if (retryDelay) document.getElementById('retryDelay').value = retryDelay;
@@ -5371,6 +5856,10 @@ async def root():
                 const savePlaylist = document.getElementById('savePlaylist').checked;
                 const autoSearchFallback = document.getElementById('autoSearchFallback').checked;
 
+                // Queue options
+                const autoClearQueue = document.getElementById('autoClearQueue').checked;
+                const autoClearInterval = document.getElementById('autoClearInterval').value;
+
                 // Retry/delay options
                 const enableRetryDelay = document.getElementById('enableRetryDelay').checked;
                 const maxRetries = document.getElementById('maxRetries').value;
@@ -5384,6 +5873,7 @@ async def root():
                 // Appearance options
                 const primaryColor = selectedPrimaryColor || document.getElementById('primaryColor').value;
                 const darkModePreference = currentDarkModePreference || document.getElementById('darkModePreference').value;
+                const compactModePreference = currentCompactModePreference || document.getElementById('compactModePreference').value;
 
                 // Save to localStorage
                 localStorage.setItem('gamdl_cookies_path', cookiesPath);
@@ -5407,6 +5897,8 @@ async def root():
                 localStorage.setItem('gamdl_primary_color', primaryColor);
                 localStorage.setItem('gamdl_dark_mode_preference', darkModePreference);
                 localStorage.setItem('gamdl_auto_search_fallback', autoSearchFallback);
+                localStorage.setItem('gamdl_auto_clear_queue', autoClearQueue);
+                localStorage.setItem('gamdl_auto_clear_interval', autoClearInterval);
 
                 // Also save ALL settings to server-side config for background downloads
                 fetch('/api/config/all-settings', {
@@ -5433,6 +5925,10 @@ async def root():
                         save_playlist: savePlaylist,
                         auto_search_fallback: autoSearchFallback,
 
+                        // Queue options
+                        auto_clear_queue: autoClearQueue,
+                        auto_clear_interval: parseInt(autoClearInterval),
+
                         // Retry/delay options
                         enable_retry_delay: enableRetryDelay,
                         max_retries: parseInt(maxRetries),
@@ -5446,6 +5942,7 @@ async def root():
                         // Appearance options
                         primary_color: primaryColor,
                         dark_mode_preference: darkModePreference,
+                        compact_mode_preference: compactModePreference,
                     })
                 }).catch(err => {
                     console.error('Failed to save settings to server config:', err);
@@ -5454,7 +5951,20 @@ async def root():
 
             function saveAllSettings() {
                 savePreferences();
-                alert('Settings saved successfully!');
+
+                // Update button text temporarily
+                const saveButton = event.target;
+                const originalText = saveButton.textContent;
+                saveButton.textContent = 'Settings Updated';
+                saveButton.disabled = true;
+
+                // Restore original text after 5 seconds
+                setTimeout(() => {
+                    saveButton.textContent = originalText;
+                    saveButton.disabled = false;
+                    // Force style recalculation to ensure theme color is re-applied
+                    void saveButton.offsetHeight;
+                }, 5000);
             }
 
             function toggleRetryDelaySettings() {
@@ -5465,6 +5975,15 @@ async def root():
                     settingsContainer.style.display = 'block';
                 } else {
                     settingsContainer.style.display = 'none';
+                }
+            }
+
+            function toggleAutoClearSettings() {
+                const checkbox = document.getElementById('autoClearQueue');
+                const settingsContainer = document.getElementById('autoClearSettings');
+
+                if (checkbox && settingsContainer) {
+                    settingsContainer.style.display = checkbox.checked ? 'block' : 'none';
                 }
             }
 
@@ -5627,9 +6146,9 @@ async def root():
 
                     let actionButton = '';
                     if (item.status === 'queued') {
-                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')">Remove</button>`;
+                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')" aria-label="Remove ${escapeHtml(item.display_title)} from queue">Remove</button>`;
                     } else if (item.status === 'failed') {
-                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')">Remove</button>`;
+                        actionButton = `<button class="queue-item-remove" onclick="removeQueueItem('${item.id}')" aria-label="Remove ${escapeHtml(item.display_title)} from queue">Remove</button>`;
                     }
                     // Note: No "View Progress" button for downloading items since they run in background without WebSocket
 
@@ -5691,7 +6210,7 @@ async def root():
                     }
 
                     return `
-                        <div class="queue-item ${statusClass}">
+                        <div class="queue-item ${statusClass}" role="listitem" aria-label="Download: ${escapeHtml(item.display_title)} - ${statusText}">
                             <div class="queue-item-header">
                                 <span class="queue-item-icon">${statusIcon}</span>
                                 <span class="queue-item-title">${escapeHtml(item.display_title)}</span>
@@ -5802,7 +6321,16 @@ async def root():
 
             // Load albums and preferences on page load
             document.addEventListener('DOMContentLoaded', () => {
-                initDarkMode();  // Initialize theme first for no flash
+                initDarkMode();     // Initialize theme first for no flash
+                initCompactMode();  // Initialize compact mode
+
+                // Set initial color swatch border
+                const activeSwatch = document.querySelector('.color-swatch.active');
+                if (activeSwatch) {
+                    const color = activeSwatch.getAttribute('data-color');
+                    activeSwatch.style.borderColor = color;
+                }
+
                 loadPreferences();  // toggleRetryDelaySettings() is now called inside loadPreferences() after settings are loaded
                 loadLibraryAlbums();
                 startQueueRefresh();
@@ -6060,7 +6588,7 @@ async def root():
                 let html = '';
                 events.forEach(event => {
                     const eventClass = event.event_type.replace('_', '-');
-                    const icon = getEventIcon(event.event_type);
+                    const icon = getActivityIconSVG(event.event_type, event.message);
                     const time = new Date(event.timestamp);
 
                     // Build track list HTML if tracks are present
@@ -6095,19 +6623,33 @@ async def root():
                 logContainer.innerHTML = html;
             }
 
-            function getEventIcon(eventType) {
-                const icons = {
-                    'new_tracks': '+',
-                    'removed_tracks': '−',
-                    'downloads_completed': '✓',
-                    'downloaded': '✓',
-                    'started': '▶',
-                    'stopped': '■',
-                    'toggle': '⚙',
-                    'error': '!',
-                    'check': '↻'
+            function getActivityIconSVG(eventType, message) {
+                const size = 16;
+                const strokeWidth = 2;
+
+                // Special handling for toggle event - determine pause vs play based on message
+                if (eventType === 'toggle') {
+                    if (message && message.toLowerCase().includes('off')) {
+                        // Pause icon (monitoring turned off)
+                        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`;
+                    } else {
+                        // Play icon (monitoring turned on/resumed)
+                        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
+                    }
+                }
+
+                const svgs = {
+                    'new_tracks': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
+                    'removed_tracks': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
+                    'downloads_completed': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+                    'downloaded': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+                    'started': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
+                    'stopped': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12"></rect></svg>`,
+                    'error': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`,
+                    'check': `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
                 };
-                return icons[eventType] || '•';
+
+                return svgs[eventType] || `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3"></circle></svg>`;
             }
 
             function formatRelativeTime(date) {
@@ -6187,11 +6729,11 @@ async def root():
         </script>
 
         <!-- Artist Content Modal -->
-        <div id="artistModal" class="modal" style="display:none;">
+        <div id="artistModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="artistModalTitle">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2 id="artistModalTitle">Artist Content</h2>
-                    <button class="modal-close" onclick="closeArtistModal()">&times;</button>
+                    <button class="modal-close" onclick="closeArtistModal()" aria-label="Close artist modal">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div id="artistModalLoading" class="loading">
@@ -6216,14 +6758,26 @@ async def root():
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button onclick="downloadSelectedArtistContent()" class="btn-primary">Download Selected</button>
-                    <button onclick="closeArtistModal()" class="btn-secondary">Close</button>
+                    <button onclick="downloadSelectedArtistContent()" class="btn-primary" aria-label="Download selected artist content">Download Selected</button>
+                    <button onclick="closeArtistModal()" class="btn-secondary" aria-label="Close artist content selector">Close</button>
                 </div>
             </div>
         </div>
     </body>
     </html>
     """
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve the favicon."""
+    # Look for favicon in the gamdl package directory
+    favicon_path = Path(__file__).parent / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(favicon_path)
+
+    # Return 404 if favicon doesn't exist
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 
 # Queue API Endpoints
@@ -6401,6 +6955,12 @@ async def save_all_settings_config(request_data: dict):
     if "auto_search_fallback" in request_data:
         config["auto_search_fallback"] = request_data["auto_search_fallback"]
 
+    # Queue options
+    if "auto_clear_queue" in request_data:
+        config["auto_clear_queue"] = request_data["auto_clear_queue"]
+    if "auto_clear_interval" in request_data:
+        config["auto_clear_interval"] = request_data["auto_clear_interval"]
+
     # Retry/delay options
     if "enable_retry_delay" in request_data:
         config["enable_retry_delay"] = request_data["enable_retry_delay"]
@@ -6422,9 +6982,15 @@ async def save_all_settings_config(request_data: dict):
         config["primary_color"] = request_data["primary_color"]
     if "dark_mode_preference" in request_data:
         config["dark_mode_preference"] = request_data["dark_mode_preference"]
+    if "compact_mode_preference" in request_data:
+        config["compact_mode_preference"] = request_data["compact_mode_preference"]
 
     # Save to disk
     save_webui_config(config)
+
+    # Update auto-clear schedule if settings changed
+    if "auto_clear_queue" in request_data or "auto_clear_interval" in request_data:
+        update_auto_clear_schedule()
 
     return {"success": True, "message": "All settings saved to configuration"}
 
@@ -6462,6 +7028,10 @@ async def get_all_settings_config():
             "save_playlist": config.get("save_playlist", False),
             "auto_search_fallback": config.get("auto_search_fallback", False),
 
+            # Queue options
+            "auto_clear_queue": config.get("auto_clear_queue", False),
+            "auto_clear_interval": config.get("auto_clear_interval", 60),  # Default: 1 hour
+
             # Retry/delay options
             "enable_retry_delay": config.get("enable_retry_delay", True),
             "max_retries": config.get("max_retries", 3),
@@ -6475,6 +7045,7 @@ async def get_all_settings_config():
             # Appearance options
             "primary_color": config.get("primary_color", "#007aff"),
             "dark_mode_preference": config.get("dark_mode_preference", "auto"),
+            "compact_mode_preference": config.get("compact_mode_preference", "normal"),
         }
     }
 
@@ -7463,18 +8034,40 @@ async def download_from_library(request_data: dict):
                             artist_name = item_attributes.get('artistName', '')
 
                             if album_name:
-                                # Search for album in catalog
-                                search_query = f"{album_name} {artist_name}".strip()
+                                # Build search query - avoid duplicate if album name == artist name
+                                if album_name.lower() == artist_name.lower():
+                                    search_query = album_name
+                                    logger.info(f"Album name matches artist name, using single term: {search_query}")
+                                else:
+                                    search_query = f"{album_name} {artist_name}".strip()
+
                                 logger.info(f"Searching for: {search_query}")
                                 search_results = await api.get_search_results(search_query, types=['albums'], limit=5)
 
-                                # Find best match from search results
+                                # Find best match from search results by comparing album name and artist
                                 albums = search_results.get('results', {}).get('albums', {}).get('data', [])
                                 if albums:
-                                    # Use first result (best match)
-                                    catalog_id = albums[0].get('id')
+                                    # Try to find exact match first
+                                    exact_match = None
+                                    for album in albums:
+                                        album_attrs = album.get('attributes', {})
+                                        search_album_name = album_attrs.get('name', '')
+                                        search_artist_name = album_attrs.get('artistName', '')
+
+                                        if (search_album_name.lower() == album_name.lower() and
+                                            search_artist_name.lower() == artist_name.lower()):
+                                            exact_match = album
+                                            logger.info(f"Found exact match: {search_album_name} by {search_artist_name}")
+                                            break
+
+                                    # Use exact match if found, otherwise use first result
+                                    selected_album = exact_match if exact_match else albums[0]
+                                    catalog_id = selected_album.get('id')
                                     url = f"https://music.apple.com/{storefront}/{media_type}/{catalog_id}"
-                                    logger.info(f"Auto-search found catalog album: {url}")
+
+                                    selected_name = selected_album.get('attributes', {}).get('name', '')
+                                    selected_artist = selected_album.get('attributes', {}).get('artistName', '')
+                                    logger.info(f"Auto-search selected: '{selected_name}' by '{selected_artist}' (ID: {catalog_id})")
                                 else:
                                     logger.warning("Auto-search found no results")
                         except Exception as e:
