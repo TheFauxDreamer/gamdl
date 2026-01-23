@@ -5392,7 +5392,7 @@ async def root():
 
                 episodes.forEach(episode => {
                     const episodeDiv = document.createElement('div');
-                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #eee;';
+                    episodeDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--border-primary);';
 
                     // Add ARIA role and label to episode
                     const date = episode.date ? new Date(episode.date).toLocaleDateString() : '';
@@ -5404,7 +5404,7 @@ async def root():
                     infoDiv.style.flex = '1';
 
                     const title = document.createElement('div');
-                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px;';
+                    title.style.cssText = 'font-weight: 500; margin-bottom: 5px; color: var(--text-primary);';
                     title.textContent = episode.title;
                     infoDiv.appendChild(title);
 
