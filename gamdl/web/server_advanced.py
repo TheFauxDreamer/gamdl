@@ -3147,6 +3147,18 @@ async def root():
                     gap: 8px;
                 }
 
+                /* Compact mode: smaller button text for cramped layout */
+                body.compact-mode .library-item button {
+                    font-size: 10px;
+                    padding: 6px 3px;
+                    min-height: 32px;
+                }
+
+                body.compact-mode .library-item .btn-group button {
+                    font-size: 9px;
+                    padding: 6px 2px;
+                }
+
                 .container {
                     padding: 12px;
                 }
@@ -5939,7 +5951,20 @@ async def root():
 
             function saveAllSettings() {
                 savePreferences();
-                alert('Settings saved successfully!');
+
+                // Update button text temporarily
+                const saveButton = event.target;
+                const originalText = saveButton.textContent;
+                saveButton.textContent = 'Settings Updated';
+                saveButton.disabled = true;
+
+                // Restore original text after 5 seconds
+                setTimeout(() => {
+                    saveButton.textContent = originalText;
+                    saveButton.disabled = false;
+                    // Force style recalculation to ensure theme color is re-applied
+                    void saveButton.offsetHeight;
+                }, 5000);
             }
 
             function toggleRetryDelaySettings() {
