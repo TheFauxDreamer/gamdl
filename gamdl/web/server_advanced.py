@@ -3907,7 +3907,7 @@ async def root():
                     </div>
                     <div class="modal-body">
                         <div id="episodeLoading" class="loading" style="display:none;">Loading episodes...</div>
-                        <div id="episodeList" style="max-height: 600px; overflow-y: auto;"></div>
+                        <div id="episodeList"></div>
                         <div id="episodeEmpty" class="library-empty" style="display:none;">
                             <p>No episodes found</p>
                         </div>
