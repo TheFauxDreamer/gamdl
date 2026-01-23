@@ -1211,6 +1211,7 @@ async def root():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
         <title>gamdl Advanced Web UI</title>
+        <link rel="icon" type="image/x-icon" href="/favicon.ico">
         <style>
             :root {
                 --primary-color: #007aff;
@@ -3162,12 +3163,12 @@ async def root():
 
             <!-- View Navigation -->
             <!-- Desktop Navigation (hidden on mobile) -->
-            <div class="nav-tabs desktop-nav">
-                <button class="nav-tab active" onclick="switchView('library', this)">Library Browser</button>
-                <button class="nav-tab" onclick="switchView('monitor', this)">Monitor</button>
-                <button class="nav-tab" onclick="switchView('downloads', this)">URL Downloads</button>
-                <button class="nav-tab" onclick="switchView('search', this)">Search</button>
-                <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;">Settings</button>
+            <div class="nav-tabs desktop-nav" role="tablist">
+                <button class="nav-tab active" onclick="switchView('library', this)" role="tab" aria-selected="true" aria-label="Navigate to Library Browser">Library Browser</button>
+                <button class="nav-tab" onclick="switchView('monitor', this)" role="tab" aria-selected="false" aria-label="Navigate to Monitor">Monitor</button>
+                <button class="nav-tab" onclick="switchView('downloads', this)" role="tab" aria-selected="false" aria-label="Navigate to URL Downloads">URL Downloads</button>
+                <button class="nav-tab" onclick="switchView('search', this)" role="tab" aria-selected="false" aria-label="Navigate to Search">Search</button>
+                <button class="nav-tab" onclick="switchView('settings', this)" style="margin-left: auto;" role="tab" aria-selected="false" aria-label="Navigate to Settings">Settings</button>
             </div>
 
             <!-- Mobile Bottom Navigation (hidden on desktop) -->
@@ -6716,6 +6717,18 @@ async def root():
     </body>
     </html>
     """
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve the favicon."""
+    # Look for favicon in the gamdl package directory
+    favicon_path = Path(__file__).parent / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(favicon_path)
+
+    # Return 404 if favicon doesn't exist
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 
 # Queue API Endpoints
