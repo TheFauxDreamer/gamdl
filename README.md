@@ -28,7 +28,7 @@ These work well enough that I haven't encountered major issues or bugs that brea
 - Improved Download Queue information
 - Mobile support for webUI
 - Colour accents & dark/light mode support
-- Option to retry URL is Library download fails
+- Option to retry URL if Library download fails
 - Auto-clear queue at user set interval
 - Compact gird mode
 
