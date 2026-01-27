@@ -35,6 +35,8 @@ These work well enough that I haven't encountered major issues or bugs that brea
 ## ⚠️ WIP Features
 These are in "active" development and in varying states of useability. (Check the branches for these features)
 
+- Detailed download queue button. View the success, failure, & skipped songs in detail.
+- Clean up the CMD output? (maybe a verbose mode?)
 
 ## 🗓️ Future Features
 These will come in time (maybe), I don't have a timeline tho.
