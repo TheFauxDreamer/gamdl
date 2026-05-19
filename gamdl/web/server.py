@@ -90,6 +90,20 @@ async def root():
                 padding: 20px;
                 background: #f5f5f5;
             }
+
+            /* Large screens (1440p+) */
+            @media (min-width: 1600px) {
+                body {
+                    max-width: 1500px;
+                }
+            }
+
+            /* 4K+ screens */
+            @media (min-width: 2560px) {
+                body {
+                    max-width: 2200px;
+                }
+            }
             .container {
                 background: white;
                 padding: 30px;
