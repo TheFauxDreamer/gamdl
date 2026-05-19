@@ -1,35 +1,73 @@
 """CLI entry point for gamdl web UI."""
 
+import subprocess
 import sys
 
 
 def _check_dependencies():
-    """Check that required dependencies are installed using only stdlib."""
-    required = ["click", "httpx", "fastapi", "uvicorn"]
+    """Check that required dependencies are installed, auto-install if missing."""
+    required = [
+        "click",
+        "httpx",
+        "httpx_retries",
+        "fastapi",
+        "uvicorn",
+        "structlog",
+        "dataclass_click",
+        "Crypto",  # pycryptodome
+        "apscheduler",
+    ]
     missing = []
     for module in required:
         try:
             __import__(module)
         except ImportError:
-            missing.append(module)
+            # Map import names to pip package names
+            pip_name = {
+                "httpx_retries": "httpx-retries",
+                "dataclass_click": "dataclass-click",
+                "Crypto": "pycryptodome",
+            }.get(module, module)
+            missing.append(pip_name)
+
     if missing:
         print("")
         print("=" * 60)
-        print("  Looks like you're missing some dependencies!")
-        print(f"  Missing: {', '.join(missing)}")
-        print("")
-        print("  Run this command to install them:")
-        print("")
-        print('    python -m pip install -e ".[web]"')
-        print("")
-        print("  Then try launching again.")
+        print("  Missing dependencies detected!")
+        print(f"  Installing: {', '.join(missing)}")
         print("=" * 60)
         print("")
-        sys.exit(1)
+
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install"] + missing,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            print("")
+            print("  Dependencies installed successfully!")
+            print("  Restarting...")
+            print("")
+            # Re-execute the same command
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except subprocess.CalledProcessError as e:
+            print("")
+            print("=" * 60)
+            print("  Failed to install dependencies automatically.")
+            print("")
+            print("  Run this command manually:")
+            print("")
+            print('    python -m pip install -e ".[web]"')
+            print("")
+            print("  Then try launching again.")
+            print("=" * 60)
+            print("")
+            sys.exit(1)
 
 
 _check_dependencies()
 
+import os
 import click
 
 
