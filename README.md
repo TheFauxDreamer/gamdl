@@ -2,7 +2,7 @@
 
 A CLI & Web-based GUI app for downloading Apple Music songs, & music videos.
 
-This tool is forked from **v2.8.2** of Gamdl by Glomatico, any fixes or updates to the original since then are not included.
+This tool is forked from **v3.5.2** of Gamdl by Glomatico, with a custom web UI added on top.
 
 -------------------------------------------------------------------------------------------------------------------------------
 **Disclaimer:** I know very little about Python, this is all thanks to Claude.

@@ -1,5 +1,6 @@
 """CLI entry point for gamdl web UI."""
 
+import os
 import subprocess
 import sys
 
