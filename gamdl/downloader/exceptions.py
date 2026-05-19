@@ -1,38 +1,20 @@
-class GamdlError(Exception):
+from ..utils import GamdlError
+
+
+class GamdlDownloaderError(GamdlError):
     pass
 
 
-class MediaFileExists(GamdlError):
-    def __init__(self, media_path: str):
-        super().__init__(f"Media file already exists at path: {media_path}")
+class GamdlDownloaderSyncedLyricsOnlyError(GamdlDownloaderError):
+    def __init__(self) -> None:
+        super().__init__("Download mode is set to synced lyrics only")
 
 
-class NotStreamable(GamdlError):
-    def __init__(self, media_id: str):
-        super().__init__(f"Media ID is not streamable: {media_id}")
+class GamdlDownloaderMediaFileExistsError(GamdlDownloaderError):
+    def __init__(self, file_path: str) -> None:
+        super().__init__(f"Media file already exists: {file_path}")
 
 
-class FormatNotAvailable(GamdlError):
-    def __init__(self, media_id: str):
-        super().__init__(f"Requested format is not available for media ID: {media_id}")
-
-
-class ExecutableNotFound(GamdlError):
-    def __init__(self, executable: str):
-        super().__init__(f"Executable not found: {executable}")
-
-
-class SyncedLyricsOnly(GamdlError):
-    def __init__(self):
-        super().__init__("Only downloading synced lyrics is supported")
-
-
-class UnsupportedMediaType(GamdlError):
-    def __init__(self, media_type: str):
-        super().__init__(f"Unsupported media type: {media_type}")
-
-
-class DependencyMissing(GamdlError):
-    """Raised when a required dependency is missing. Queue should continue but item marked as failed."""
-    def __init__(self, dependency: str):
-        super().__init__(f"{dependency} dependency missing")
+class GamdlDownloaderDependencyNotFoundError(GamdlDownloaderError):
+    def __init__(self, dependency_name: str) -> None:
+        super().__init__(f"Required dependency not found: {dependency_name}")

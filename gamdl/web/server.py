@@ -14,21 +14,26 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from gamdl.api.apple_music_api import AppleMusicApi
-from gamdl.api.itunes_api import ItunesApi
+from gamdl.api.apple_music import AppleMusicApi
+from gamdl.api.itunes import ItunesApi
 from gamdl.downloader.downloader import AppleMusicDownloader
-from gamdl.downloader.downloader_base import AppleMusicBaseDownloader
-from gamdl.downloader.downloader_song import AppleMusicSongDownloader
-from gamdl.downloader.downloader_music_video import AppleMusicMusicVideoDownloader
-from gamdl.downloader.downloader_uploaded_video import AppleMusicUploadedVideoDownloader
+from gamdl.downloader.base import AppleMusicBaseDownloader
+from gamdl.downloader.song import AppleMusicSongDownloader
+from gamdl.downloader.music_video import AppleMusicMusicVideoDownloader
+from gamdl.downloader.uploaded_video import AppleMusicUploadedVideoDownloader
 from gamdl.downloader.enums import DownloadMode, RemuxMode
-from gamdl.downloader.exceptions import GamdlError
+from gamdl.downloader.exceptions import (
+    GamdlDownloaderDependencyNotFoundError,
+    GamdlDownloaderMediaFileExistsError,
+    GamdlDownloaderSyncedLyricsOnlyError,
+)
 from gamdl.downloader.types import DownloadItem
 from gamdl.interface.enums import SongCodec, MusicVideoResolution, CoverFormat
 from gamdl.interface.interface import AppleMusicInterface
-from gamdl.interface.interface_song import AppleMusicSongInterface
-from gamdl.interface.interface_music_video import AppleMusicMusicVideoInterface
-from gamdl.interface.interface_uploaded_video import AppleMusicUploadedVideoInterface
+from gamdl.interface.base import AppleMusicBaseInterface
+from gamdl.interface.song import AppleMusicSongInterface
+from gamdl.interface.music_video import AppleMusicMusicVideoInterface
+from gamdl.interface.uploaded_video import AppleMusicUploadedVideoInterface
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -735,17 +740,31 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         await send_log("Apple Music API initialized successfully", "success")
 
         # Initialize iTunes API
-        itunes_api = ItunesApi(
+        itunes_api = await ItunesApi.create(
             api.storefront,
-            api.language,
+            storefront_id=None,
+            language=api.language,
         )
         await send_log("iTunes API initialized successfully", "success")
 
         # Initialize interface
-        interface = AppleMusicInterface(api, itunes_api)
-        song_interface = AppleMusicSongInterface(interface)
-        music_video_interface = AppleMusicMusicVideoInterface(interface)
-        uploaded_video_interface = AppleMusicUploadedVideoInterface(interface)
+        base_interface = AppleMusicBaseInterface(
+            apple_music_api=api,
+            itunes_api=itunes_api,
+            cover_format=cover_format,
+            cover_size=request.cover_size or 1200,
+            use_wrapper=False,
+            wrapper_m3u8_ip="127.0.0.1:10020",
+            cdm=AppleMusicBaseInterface.create_cdm(),
+        )
+        song_interface = AppleMusicSongInterface(base_interface)
+        music_video_interface = AppleMusicMusicVideoInterface(base_interface)
+        uploaded_video_interface = AppleMusicUploadedVideoInterface(base_interface)
+        interface = AppleMusicInterface(
+            song=song_interface,
+            music_video=music_video_interface,
+            uploaded_video=uploaded_video_interface,
+        )
 
         # Initialize downloaders
         output_path = request.output_path or "./downloads"
@@ -774,6 +793,7 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                 pass
 
         base_downloader = AppleMusicBaseDownloader(
+            interface=interface,
             output_path=output_path,
             temp_path=temp_path,
             wvd_path=None,
@@ -783,30 +803,23 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
         )
 
         song_downloader = AppleMusicSongDownloader(
-            base_downloader=base_downloader,
-            interface=song_interface,
-            codec=song_codec,
-            fetch_extra_tags=request.extra_tags,
-            no_synced_lyrics=request.no_lyrics,
+            base=base_downloader,
         )
 
         music_video_downloader = AppleMusicMusicVideoDownloader(
-            base_downloader=base_downloader,
-            interface=music_video_interface,
-            resolution=music_video_resolution,
+            base=base_downloader,
         )
 
         uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
-            base_downloader=base_downloader,
-            interface=uploaded_video_interface,
+            base=base_downloader,
         )
 
         downloader = AppleMusicDownloader(
-            interface=interface,
-            base_downloader=base_downloader,
-            song_downloader=song_downloader,
-            music_video_downloader=music_video_downloader,
-            uploaded_video_downloader=uploaded_video_downloader,
+            song=song_downloader,
+            music_video=music_video_downloader,
+            uploaded_video=uploaded_video_downloader,
+            save_cover=not request.no_cover,
+            no_synced_lyrics=request.no_lyrics,
         )
 
         await send_log(f"Processing {len(request.urls)} URL(s)...")
@@ -821,48 +834,44 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             await send_log(f"[URL {url_index}/{len(request.urls)}] Processing: {url}")
 
             try:
-                # Get URL info
-                url_info = downloader.get_url_info(url)
-                if not url_info:
-                    await send_log(f"Could not parse URL: {url}", "warning")
-                    continue
-
-                # Get download queue
+                # Get download items from URL
                 await send_log(f"Fetching metadata for {url}...")
-                download_queue = await downloader.get_download_queue(url_info)
+                download_items = []
+                async for download_item in downloader.get_download_item_from_url(url):
+                    download_items.append(download_item)
 
-                if not download_queue:
+                if not download_items:
                     await send_log("No downloadable media found", "warning")
                     continue
 
-                await send_log(f"Found {len(download_queue)} track(s) to download", "success")
+                await send_log(f"Found {len(download_items)} track(s) to download", "success")
 
                 # Download each item
-                for download_index, download_item in enumerate(download_queue, 1):
+                for download_index, download_item in enumerate(download_items, 1):
                     # Check for cancellation before each download
                     if cancellation_flags.get(session_id, False):
                         await send_log("Download cancelled by user", "warning")
                         break
 
                     # Safely extract media title
-                    if isinstance(download_item, DownloadItem) and download_item.media_metadata:
-                        media_title = download_item.media_metadata.get("attributes", {}).get("name", "Unknown Title")
+                    if hasattr(download_item, 'media') and download_item.media and download_item.media.media_metadata:
+                        media_title = download_item.media.media_metadata.get("attributes", {}).get("name", "Unknown Title")
                     else:
                         media_title = "Unknown Title"
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Warning: Invalid download item", "warning")
+                        await send_log(f"[Track {download_index}/{len(download_items)}] Warning: Invalid download item", "warning")
 
-                    await send_log(f"[Track {download_index}/{len(download_queue)}] Downloading: {media_title}")
+                    await send_log(f"[Track {download_index}/{len(download_items)}] Downloading: {media_title}")
 
                     try:
                         await downloader.download(download_item)
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Completed: {media_title}", "success")
-                    except GamdlError as e:
+                        await send_log(f"[Track {download_index}/{len(download_items)}] Completed: {media_title}", "success")
+                    except (GamdlDownloaderMediaFileExistsError, GamdlDownloaderSyncedLyricsOnlyError) as e:
                         # Expected errors (file exists, not streamable, etc.) - show as warnings
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Skipped: {str(e)}", "warning")
+                        await send_log(f"[Track {download_index}/{len(download_items)}] Skipped: {str(e)}", "warning")
                         continue
                     except Exception as e:
                         # Unexpected errors - show as errors
-                        await send_log(f"[Track {download_index}/{len(download_queue)}] Error: {str(e)}", "error")
+                        await send_log(f"[Track {download_index}/{len(download_items)}] Error: {str(e)}", "error")
                         continue
 
             except Exception as e:
@@ -870,9 +879,9 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
                 logger.exception(f"Full traceback for URL {url}:")
                 continue
 
-            # Safety check - ensure download_queue was successfully created
-            if not download_queue:
-                await send_log("No download queue available, skipping URL", "warning")
+            # Safety check - ensure download_items was successfully created
+            if not download_items:
+                await send_log("No download items available, skipping URL", "warning")
                 continue
 
         await send_log("All downloads completed!", "success")

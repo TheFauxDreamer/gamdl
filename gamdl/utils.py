@@ -1,40 +1,13 @@
-import json
-import typing
-import subprocess
 import asyncio
-
-import httpx
-
-
-def raise_for_status(httpx_response: httpx.Response, valid_responses: set[int] = {200}):
-    if httpx_response.status_code not in valid_responses:
-        raise httpx._exceptions.HTTPError(
-            f"HTTP error {httpx_response.status_code}: {httpx_response.text}"
-        )
-
-
-def safe_json(httpx_response: httpx.Response) -> dict:
-    try:
-        return httpx_response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-
-
-async def get_response(
-    url: str,
-    valid_responses: set[int] = {200},
-) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.get(url)
-        raise_for_status(response, valid_responses)
-        return response
+import string
+import typing
 
 
 async def async_subprocess(*args: str, silent: bool = False) -> None:
     if silent:
         additional_args = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
         }
     else:
         additional_args = {}
@@ -43,29 +16,31 @@ async def async_subprocess(*args: str, silent: bool = False) -> None:
         *args,
         **additional_args,
     )
-    await proc.communicate()
+
+    stdout, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        raise Exception(f'"{args[0]}" exited with code {proc.returncode}')
+        msg = (
+            f"Exited with code {proc.returncode}: {' '.join(str(arg) for arg in args)}"
+        )
+
+        if stdout:
+            msg += f"\nstdout:\n{stdout.decode()}"
+        if stderr:
+            msg += f"\nstderr:\n{stderr.decode()}"
+
+        raise Exception(msg)
 
 
 async def safe_gather(
     *tasks: typing.Awaitable[typing.Any],
     limit: int = 10,
-    progress_callback: typing.Optional[typing.Callable[[int, int], None]] = None,
 ) -> list[typing.Any]:
     semaphore = asyncio.Semaphore(limit)
-    completed_count = 0
-    total_count = len(tasks)
 
     async def bounded_task(task: typing.Awaitable[typing.Any]) -> typing.Any:
-        nonlocal completed_count
         async with semaphore:
-            result = await task
-            if progress_callback:
-                completed_count += 1
-                progress_callback(completed_count, total_count)
-            return result
+            return await task
 
     return await asyncio.gather(
         *(bounded_task(task) for task in tasks),
@@ -73,17 +48,20 @@ async def safe_gather(
     )
 
 
-async def sequential_gather(
-    *tasks: typing.Awaitable[typing.Any],
-    interval: float = 0.5,
-) -> list[typing.Any]:
-    results = []
-    for i, task in enumerate(tasks):
-        try:
-            result = await task
-            results.append(result)
-        except Exception as e:
-            results.append(e)
-        if interval > 0 and i < len(tasks) - 1:
-            await asyncio.sleep(interval)
-    return results
+class CustomStringFormatter(string.Formatter):
+    def format_field(self, value: typing.Any, format_spec: str) -> str:
+        if isinstance(value, tuple) and len(value) == 2:
+            actual_value, fallback_value = value
+            if actual_value is None:
+                return fallback_value
+
+            try:
+                return super().format_field(actual_value, format_spec)
+            except Exception:
+                return fallback_value
+
+        return super().format_field(value, format_spec)
+
+
+class GamdlError(Exception):
+    pass
