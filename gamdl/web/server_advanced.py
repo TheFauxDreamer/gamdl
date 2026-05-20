@@ -375,40 +375,39 @@ async def fetch_playlist_track_ids(playlist_info: dict) -> list[str]:
         raise
 
 
+def _clear_playlist_files(playlist_file_path: str):
+    """Delete both M3U8 and M3U playlist files."""
+    import os
+    m3u8_path = playlist_file_path
+    m3u_path = playlist_file_path.replace('.m3u8', '.m3u') if playlist_file_path.endswith('.m3u8') else playlist_file_path + '.m3u'
+
+    for path in [m3u8_path, m3u_path]:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                logger.info(f"Cleared playlist file: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to clear playlist file {path}: {e}")
+
+
 async def _clear_monitored_playlist_files(playlist_info: dict, config: dict):
     """Clear existing playlist files for a monitored playlist to prevent stale entries."""
-    from gamdl.downloader.base import AppleMusicBaseDownloader
-    from gamdl.interface.types import PlaylistTags
+    import os
+    from pathlib import Path
 
-    # Create a minimal base downloader instance just to calculate playlist file path
     output_path = config.get('output_path', './Apple Music')
+    playlist_file_template = config.get('playlist_file_template', 'Playlists/{playlist_title}')
 
-    # Helper to convert empty strings to None
-    def clean_config_value(key, default=None):
-        value = config.get(key, default)
-        if isinstance(value, str) and value.strip() == "":
-            return None
-        return value
-
-    temp_downloader = AppleMusicBaseDownloader(
-        output_path=output_path,
-        playlist_file_template=clean_config_value('playlist_file_template', 'Playlists/{playlist_title}'),
-    )
-
-    # Build playlist tags from playlist_info
-    playlist_tags = PlaylistTags(
-        playlist_artist=playlist_info.get('curator_name', 'Unknown'),
-        playlist_id=playlist_info['playlist_id'],
-        playlist_title=playlist_info['playlist_name'],
-        playlist_track=1,  # Doesn't matter for path calculation
-    )
-
-    # Get playlist file path
-    playlist_file_path = temp_downloader.get_playlist_file_path(playlist_tags)
+    # Compute playlist file path manually
+    playlist_title = playlist_info.get('playlist_name', 'Unknown Playlist')
+    # Sanitize the title for filesystem
+    import re
+    safe_title = re.sub(r'[\\/:*?"<>|;]', '_', playlist_title)
+    playlist_file_path = str(Path(output_path) / playlist_file_template.format(playlist_title=safe_title) / f"{safe_title}.m3u8")
 
     # Clear both M3U8 and M3U files
     logger.info(f"Clearing monitored playlist files: {playlist_file_path}")
-    temp_downloader.clear_playlist_files(playlist_file_path)
+    _clear_playlist_files(playlist_file_path)
 
 
 async def handle_new_tracks(playlist_info: dict, new_track_ids: set):
@@ -8054,7 +8053,7 @@ async def download_from_library(request_data: dict):
                                     search_query = f"{album_name} {artist_name}".strip()
 
                                 logger.info(f"Searching for: {search_query}")
-                                search_results = await api.get_search_results(search_query, types=['albums'], limit=5)
+                                search_results = await api.get_search_results(search_query, types="albums", limit=5)
 
                                 # Find best match from search results by comparing album name and artist
                                 albums = search_results.get('results', {}).get('albums', {}).get('data', [])
@@ -8803,11 +8802,6 @@ async def run_download_session(session_id: str, session: dict, websocket: WebSoc
             interface=interface,
             output_path=output_path,
             temp_path=temp_path,
-            wvd_path=None,
-            save_cover=not request.no_cover,
-            cover_size=request.cover_size or 1200,
-            cover_format=cover_format,
-            save_playlist=request.save_playlist,
         )
 
         song_downloader = AppleMusicSongDownloader(

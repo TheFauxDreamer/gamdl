@@ -448,6 +448,30 @@ class AppleMusicApi:
 
         return album
 
+    async def get_library_song(
+        self,
+        song_id: str,
+        extend: str = "extendedAssetUrls",
+        include: str = "lyrics,albums",
+    ) -> dict | None:
+        """Get a single library song by ID."""
+        if not self.active_subscription:
+            return None
+
+        log = logger.bind(action="get_library_song", song_id=song_id)
+
+        song = await self._amp_request(
+            f"/v1/me/library/songs/{song_id}",
+            {
+                "extend": extend,
+                "include": include,
+            },
+        )
+
+        log.debug("success", song=song)
+
+        return song
+
     async def get_library_playlist(
         self,
         playlist_id: str,
@@ -606,3 +630,66 @@ class AppleMusicApi:
         log.debug("success", license_exchange=license_exchange)
 
         return license_exchange
+
+    async def get_all_library_albums(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        include: str = "",
+        extend: str = "extendedAssetUrls",
+    ) -> dict | None:
+        """Get all albums from user's library."""
+        if not self.active_subscription:
+            return None
+
+        return await self._amp_request(
+            "/v1/me/library/albums",
+            {
+                "limit": limit,
+                "offset": offset,
+                "include": include,
+                "extend": extend,
+            },
+        )
+
+    async def get_all_library_playlists(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        include: str = "",
+        extend: str = "extendedAssetUrls",
+    ) -> dict | None:
+        """Get all playlists from user's library."""
+        if not self.active_subscription:
+            return None
+
+        return await self._amp_request(
+            "/v1/me/library/playlists",
+            {
+                "limit": limit,
+                "offset": offset,
+                "include": include,
+                "extend": extend,
+            },
+        )
+
+    async def get_all_library_songs(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        include: str = "",
+        extend: str = "extendedAssetUrls",
+    ) -> dict | None:
+        """Get all songs from user's library."""
+        if not self.active_subscription:
+            return None
+
+        return await self._amp_request(
+            "/v1/me/library/songs",
+            {
+                "limit": limit,
+                "offset": offset,
+                "include": include,
+                "extend": extend,
+            },
+        )
